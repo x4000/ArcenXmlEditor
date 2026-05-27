@@ -1,0 +1,538 @@
+:root {
+  /* Light theme (default) */
+  --bg: #ffffff;
+  --sidebar-bg: #f7f9fe;
+  --tab-bg: #3e3b81;
+  --tab-text: #ffffff;
+  --tab-active-bg: #f5cc84;
+  --tab-active-text: #000000;
+  --tab-bar-bg: #635d99;
+  --border: #d4d4d4;
+  --text: #000000;
+  --text-dim: #6e6e6e;
+  --text-dimmer: #aaaaaa;
+  --selection: #e8e8e8;
+  --accent: #007acc;
+  --accent-bg: #007acc18;
+  --sidebar-active-bg: #d5d4f1;
+  --sidebar-active-text: #252351;
+  --gutter-changed: #e2c000;
+  --search-bg: #ceccf0;
+  --search-results-bg: #e3e2f5;
+  --search-results-header: #d8d7ef;
+  --search-text: #000000;
+  --tooltip-bg: #dddcfa;
+  --tooltip-border: #635d99;
+  --tooltip-text: #252351;
+  --gutter-bg: #ceccf0;
+  --gutter-text: #000000;
+  --status-bar-bg: #7c38c5;
+  --status-bar-error: #c5384c;
+  --status-bar-warn: #c56338;
+  --status-bar-info: #c59b38;
+
+  /* Metadata (schema) tab palette — light. Selected metadata tabs use
+     a purple background to look distinct from the yellow XML selection.
+     Non-selected metadata tabs are a muted purple text. */
+  --tab-schema-text: #ddcced;
+  --tab-schema-active-bg: #c5accd;
+  --tab-schema-active-text: var(--tab-active-text);
+
+  /* Source-control (VCS) indicator colors. Used by the title-bar pips,
+     sidebar/tab left dots, and the Plugins chip. Provider-agnostic. */
+  --vcs-clean: #57a64a;
+  --vcs-modified: #e6a23c;
+  --vcs-added: #57a64a;
+  --vcs-deleted: #b55a66;
+  --vcs-conflict: #e84a4a;
+  --vcs-unversioned: #8f95a3;
+  --vcs-missing: #b55a66;
+
+  /* Syntax colors */
+  --syn-tag: #800000;
+  --syn-bracket: #0000ff;
+  --syn-attr-name: #ff0000;
+  --syn-attr-value: #0000ff;
+  --syn-fk-dropdown: #0891b2;
+  --syn-fk-list: #AF00DB;
+  --syn-bool: #0000ff;
+  --syn-number: #098658;
+  --syn-comment: #008000;
+  --syn-dimmed: #c0c0c0;
+}
+
+[data-theme="dark"] {
+  --bg: #1e1e1e;
+  --sidebar-bg: #252526;
+  --sidebar-active-bg: #37373d;
+  --sidebar-active-text: #e0c080;
+  --tab-bg: #2d2d2d;
+  --tab-text: #aab8b0;
+  --tab-active-bg: #1e1e1e;
+  --tab-active-text: #f6d396;
+
+  /* Metadata (schema) tab palette — dark. Selected metadata tabs share
+     the XML tab background; only the text color shifts to purple. */
+  --tab-schema-text: #9e8c9d;
+  --tab-schema-active-bg: var(--tab-active-bg);
+  --tab-schema-active-text: #cca1c6;
+  --tab-bar-bg: #2d2d2d;
+  --border: #3c3c3c;
+  --text: #d4d4d4;
+  --text-dim: #888888;
+  --text-dimmer: #555555;
+  --selection: #37373d;
+  --accent: #007acc;
+  --accent-bg: #007acc22;
+  --gutter-changed: #e2c000;
+  --search-bg: #2d2d2d;
+  --search-results-bg: #2d2d2d;
+  --search-results-header: #333333;
+  --search-text: #d4d4d4;
+  --tooltip-bg: #2d2d2d;
+  --tooltip-border: #555555;
+  --tooltip-text: #d4d4d4;
+  --gutter-bg: #252526;
+  --gutter-text: #888888;
+  --status-bar-bg: #007acc;
+  --status-bar-error: #c5384c;
+  --status-bar-warn: #c56338;
+  --status-bar-info: #8a6d2a;
+
+  --syn-tag: #569cd6;
+  --syn-bracket: #808080;
+  --syn-attr-name: #9cdcfe;
+  --syn-attr-value: #ce9178;
+  --syn-fk-dropdown: #4dd0e1;
+  --syn-fk-list: #c586c0;
+  --syn-bool: #569cd6;
+  --syn-number: #b5cea8;
+  --syn-comment: #6a9955;
+  --syn-dimmed: #555555;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* Custom title bar */
+.title-bar {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  background: var(--tab-bar-bg);
+  color: #fff;
+  font-size: 12px;
+  -webkit-app-region: drag;
+  user-select: none;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+.title-bar img {
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.title-bar .title-text {
+  font-weight: 500;
+}
+
+.title-bar .title-middle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.title-bar .window-controls {
+  display: flex;
+  -webkit-app-region: no-drag;
+  height: 100%;
+}
+
+.title-bar .window-controls button {
+  background: transparent;
+  border: none;
+  color: #fff;
+  width: 46px;
+  height: 100%;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.title-bar .window-controls button:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.title-bar .window-controls button.close-window:hover {
+  background: #e81123;
+}
+
+/* Layout */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border-left: 4px solid var(--tab-bar-bg);
+  border-right: 4px solid var(--tab-bar-bg);
+  border-bottom: 4px solid var(--tab-bar-bg);
+}
+
+.app-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar {
+  min-width: 150px;
+  max-width: 600px;
+  background: var(--sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sidebar-resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: var(--tab-bg);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.sidebar-resize-handle:hover {
+  background: var(--accent);
+}
+
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Tab bar (document tabs) */
+.tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  background: var(--tab-bar-bg);
+  border-bottom: 1px solid var(--border);
+  min-height: 22px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 1px 10px;
+  cursor: pointer;
+  border-right: 1px solid rgba(255,255,255,0.15);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--tab-text);
+  user-select: none;
+  max-width: 200px;
+}
+
+.tab.active {
+  background: var(--tab-active-bg);
+  color: var(--tab-active-text);
+  font-weight: 600;
+  border-bottom: none;
+}
+
+/* Metadata (schema) tabs — distinguished by color, not by a textual
+   suffix. Light mode uses a purple palette; dark mode only recolors the
+   text (background stays the same dark as XML tabs). */
+.tab.schema {
+  color: var(--tab-schema-text, #c6b7d4);
+}
+.tab.schema.active {
+  background: var(--tab-schema-active-bg, var(--tab-active-bg));
+  color: var(--tab-schema-active-text, var(--tab-active-text));
+}
+
+.tab .close-btn {
+  margin-left: 8px;
+  opacity: 0.5;
+  font-size: 14px;
+}
+
+.tab .close-btn:hover {
+  opacity: 1;
+}
+
+.tab .modified-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gutter-changed);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.tab.active .modified-dot {
+  background: #8b4513;
+}
+
+/* Editor area */
+.editor-container {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.editor-container .cm-editor {
+  height: 100%;
+}
+
+/* Status bar */
+.status-bar {
+  height: 24px;
+  background: var(--status-bar-bg);
+  color: white;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.status-bar.has-errors {
+  background: var(--status-bar-error);
+}
+.status-bar.has-warnings {
+  background: var(--status-bar-warn);
+}
+.status-bar.has-info {
+  background: var(--status-bar-info);
+}
+
+/* Sidebar tabs */
+.sidebar-tabs {
+  display: flex;
+  background: var(--tab-bar-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 4px;
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--tab-text);
+  border-bottom: 2px solid transparent;
+}
+
+.sidebar-tab.active {
+  background: var(--tab-active-bg);
+  color: var(--tab-active-text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* File tree */
+.file-tree-folder {
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-tree-folder-header {
+  display: flex;
+  align-items: center;
+  padding: 3px 8px;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-tree-folder-header:hover {
+  background: var(--selection);
+}
+
+.file-tree-file {
+  padding: 3px 8px 3px 28px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-tree-file:hover {
+  background: var(--selection);
+}
+
+.file-tree-file.active {
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text);
+  font-weight: 600;
+}
+
+/* Search input */
+.sidebar-search {
+  padding: 6px 8px;
+  background: var(--search-bg);
+  color: var(--search-text);
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-search input {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.sidebar-search input:focus {
+  border-color: var(--accent);
+}
+
+/* Gutter change markers */
+.cm-gutterChanged {
+  width: 3px;
+  background: var(--gutter-changed);
+}
+
+/* CodeMirror chrome theming */
+.cm-editor .cm-gutters {
+  background: var(--gutter-bg);
+  color: var(--gutter-text);
+  border-right: 1px solid var(--border);
+}
+
+.cm-editor .cm-activeLineGutter {
+  background: rgba(0,0,0,0.06);
+}
+
+/* CM6 search panel background */
+.cm-editor .cm-panel.cm-search {
+  background: var(--search-bg) !important;
+  color: var(--search-text);
+}
+.cm-editor .cm-panel.cm-search input[type="text"],
+.cm-editor .cm-panel.cm-search input[type="search"],
+.cm-editor .cm-panel.cm-search input:not([type]) {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: 'JetBrains Mono','Fira Code','Consolas',monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+}
+.cm-editor .cm-panel.cm-search input[type="text"]:focus,
+.cm-editor .cm-panel.cm-search input[type="search"]:focus,
+.cm-editor .cm-panel.cm-search input:not([type]):focus {
+  border-color: var(--accent);
+}
+.cm-editor .cm-panel.cm-search button {
+  color: #fff;
+  background: var(--tab-bg);
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.cm-editor .cm-panel.cm-search button:hover {
+  opacity: 0.85;
+}
+/* Style checkbox labels as toggle buttons */
+/* Hide the "all" (select all matches) button */
+.cm-editor .cm-panel.cm-search button[name="select"] {
+  display: none;
+}
+.cm-editor .cm-panel.cm-search label {
+  color: #fff;
+  background: rgba(0,0,0,0.06);
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+}
+.cm-editor .cm-panel.cm-search label input[type="checkbox"] {
+  display: none;
+}
+.cm-editor .cm-panel.cm-search label:has(input:checked) {
+  background: var(--tab-bg);
+  color: #fff;
+}
+
+/* Scrollbar theming (light mode) */
+:root {
+  --scrollbar-track: #e8e6f0;
+  --scrollbar-thumb: #8b84b8;
+  --scrollbar-thumb-hover: #6b62a0;
+}
+[data-theme="dark"] {
+  --scrollbar-track: #2a2a2e;
+  --scrollbar-thumb: #555;
+  --scrollbar-thumb-hover: #777;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+/* Spellcheck error decoration — red wavy underline, no color change */
+.cm-spelling-error {
+  text-decoration: wavy underline red;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
+/* Brief flash effect to confirm a global search ran. Faint so it isn't distracting. */
+@keyframes search-flash {
+  0%   { background-color: var(--accent-bg); }
+  100% { background-color: transparent; }
+}

@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AXE Help Reference</title>
+  <style>
+    :root {
+      --bg: #ffffff; --sidebar-bg: #f7f9fe; --tab-bar-bg: #635d99; --tab-bg: #3e3b81;
+      --border: #d4d4d4; --text: #000000; --text-dim: #6e6e6e; --accent: #007acc;
+      --search-bg: #ceccf0; --scrollbar-track: #e8e6f0; --scrollbar-thumb: #8b84b8;
+    }
+    [data-theme="dark"] {
+      --bg: #1e1e1e; --sidebar-bg: #252526; --tab-bar-bg: #2d2d2d; --tab-bg: #2d2d2d;
+      --border: #3c3c3c; --text: #d4d4d4; --text-dim: #888888; --accent: #007acc;
+      --search-bg: #2d2d2d; --scrollbar-track: #2a2a2e; --scrollbar-thumb: #555;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px; background: var(--bg); color: var(--text);
+      height: 100vh; display: flex; flex-direction: column;
+      border: 4px solid var(--tab-bar-bg); border-top: none;
+    }
+    .title-bar {
+      display: flex; align-items: center; height: 30px; background: var(--tab-bar-bg);
+      color: #fff; font-size: 12px; -webkit-app-region: drag; user-select: none;
+      padding-left: 10px; flex-shrink: 0;
+    }
+    .title-bar .title-text { flex: 1; font-weight: 500; }
+    .title-bar .window-controls { display: flex; -webkit-app-region: no-drag; height: 100%; }
+    .title-bar .window-controls button {
+      background: transparent; border: none; color: #fff; width: 46px; height: 100%;
+      font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .title-bar .window-controls button:hover { background: rgba(255,255,255,0.15); }
+    .title-bar .window-controls button.close-window:hover { background: #e81123; }
+
+    .help-container { display: flex; flex: 1; overflow: hidden; }
+    .help-sidebar {
+      width: 240px; min-width: 200px; background: var(--sidebar-bg); border-right: 1px solid var(--border);
+      overflow-y: auto; flex-shrink: 0;
+    }
+    .help-sidebar .topic {
+      padding: 6px 12px; cursor: pointer; font-size: 12px; color: var(--text);
+      border-bottom: 1px solid var(--border);
+    }
+    .help-sidebar .topic:hover { background: var(--search-bg); }
+    .help-sidebar .topic.active { background: var(--tab-bg); color: #fff; font-weight: 600; }
+
+    .help-content {
+      flex: 1; overflow-y: auto; padding: 20px 30px; line-height: 1.6;
+    }
+    .help-content h1 { font-size: 20px; margin-bottom: 12px; color: var(--text); }
+    .help-content h2 { font-size: 16px; margin: 16px 0 8px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .help-content h3 { font-size: 14px; margin: 12px 0 6px; color: var(--text); }
+    .help-content p { margin: 6px 0; }
+    .help-content ul { margin: 6px 0 6px 20px; }
+    .help-content li { margin: 3px 0; }
+    .help-content code {
+      background: var(--search-bg); padding: 1px 5px; border-radius: 3px;
+      font-family: 'JetBrains Mono','Consolas',monospace; font-size: 12px;
+    }
+    .help-content kbd {
+      background: var(--tab-bar-bg); color: #fff; padding: 1px 6px; border-radius: 3px;
+      font-family: inherit; font-size: 11px; font-weight: 600;
+    }
+    .help-content table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+    .help-content th, .help-content td {
+      border: 1px solid var(--border); padding: 5px 10px; text-align: left; font-size: 12px;
+    }
+    .help-content th { background: var(--search-bg); font-weight: 600; }
+    .help-content .clickable { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+    *::-webkit-scrollbar { width: 10px; }
+    *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+    *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <div class="title-bar">
+    <span class="title-text">AXE Help Reference</span>
+    <div class="window-controls">
+      <button onclick="window.close()" class="close-window" title="Close">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="help-container">
+    <div class="help-sidebar" id="sidebar"></div>
+    <div class="help-content" id="content"></div>
+  </div>
+  <script>
+    window.arcenApi?.onThemeChange?.((theme) => {
+      document.documentElement.setAttribute('data-theme', theme);
+    });
+
+    const topics = [
+      { id: 'hotkeys', title: 'Keyboard Shortcuts' },
+      { id: 'sidebar', title: 'Sidebar' },
+      { id: 'xml-interactions', title: 'XML File Interactions' },
+      { id: 'schema-interactions', title: 'Schema File Interactions' },
+      { id: 'schema-vs-xml', title: 'Schema vs XML Files' },
+      { id: 'local-search', title: 'Local Find & Replace' },
+      { id: 'global-search', title: 'Global Find & Replace' },
+      { id: 'search-history', title: 'Search History' },
+      { id: 'detached-windows', title: 'Detached Windows' },
+      { id: 'validator', title: 'XML Validator' },
+      { id: 'spellcheck', title: 'Spellcheck' },
+      { id: 'source-control', title: 'Source Control' },
+      { id: 'persistence', title: 'Data Persistence' },
+      { id: 'retarget', title: 'Retargeting Data Folder' },
+      { id: 'suite-mode', title: 'Suite Mode & DLC Layers' },
+      { id: 'mods', title: 'Mods' },
+      { id: 'favorites', title: 'Favorites' },
+      { id: 'schema-reference', title: 'Schema Attribute Reference' },
+      { id: 'lookup-swaps', title: 'LookupSwaps' },
+      { id: 'auto-behaviors', title: 'Auto Behaviors' },
+      { id: 'diff-view', title: 'Changes Since Save' },
+      { id: 'reference-panel', title: 'Reference Panel' },
+    ];
+
+    const content = {
+hotkeys: `<h1>Keyboard Shortcuts</h1>
+<h2>File Operations</h2>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+S</kbd></td><td>Save current file</td></tr>
+<tr><td><kbd>Ctrl+Shift+S</kbd></td><td>Save all open files</td></tr>
+<tr><td><kbd>Ctrl+Z</kbd></td><td>Undo (in editor), or undo last global replace (when global search is focused)</td></tr>
+<tr><td><kbd>Ctrl+Shift+Z</kbd></td><td>Redo</td></tr>
+</table>
+
+<h2>Search</h2>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+F</kbd></td><td>Open local file search (find in current file)</td></tr>
+<tr><td><kbd>Ctrl+H</kbd></td><td>Open local file search with replace field focused</td></tr>
+<tr><td><kbd>Ctrl+Shift+F</kbd></td><td>Open global search across all files (toggles replace off if open)</td></tr>
+<tr><td><kbd>Ctrl+Shift+H</kbd></td><td>Open global search+replace, focus replace field</td></tr>
+<tr><td><kbd>F3</kbd></td><td>Find next match</td></tr>
+<tr><td><kbd>Shift+F3</kbd></td><td>Find previous match</td></tr>
+<tr><td><kbd>Escape</kbd></td><td>Close/minimize search panel, close diff view</td></tr>
+</table>
+
+<h2>Navigation</h2>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Mouse Button 4</kbd></td><td>Navigate back (previous tab in history)</td></tr>
+<tr><td><kbd>Mouse Button 5</kbd></td><td>Navigate forward</td></tr>
+<tr><td>Back/Forward buttons in title bar</td><td>Same as mouse buttons 4/5</td></tr>
+</table>
+
+<h2>Editor</h2>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Tab</kbd></td><td>Insert tab character</td></tr>
+<tr><td><kbd>Shift+Tab</kbd></td><td>Remove one leading tab</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>New line with auto-indent (no indent inside quotes)</td></tr>
+</table>
+
+<p>When text is selected and you press <kbd>Ctrl+F</kbd>, <kbd>Ctrl+Shift+F</kbd>, or their H variants, the selected text is automatically placed into the search field.</p>`,
+
+sidebar: `<h1>Sidebar</h1>
+<p>The sidebar on the left of the main window is the primary way to navigate files. It has three tabs (four in suite mode with mods present) and a search/filter bar shared across them.</p>
+
+<h2>Tabs</h2>
+<table>
+<tr><th>Tab</th><th>Contents</th></tr>
+<tr><td><strong>Explorer</strong></td><td>All base + DLC folders in the data root, each expanding to show their XML files. Mod files are excluded — they live behind the MODS tab.</td></tr>
+<tr><td><strong>Favorites</strong></td><td>User-curated groups plus auto-managed groups (Beta, DLC1-DLC6). See the Favorites topic for details.</td></tr>
+<tr><td><strong>Schema</strong></td><td>The <code>SharedMetaData.metadata</code> at the top, followed by every folder's per-table <code>.metadata</code> file. Clicking one opens it for editing the schema rather than data.</td></tr>
+<tr><td><strong>Mods</strong></td><td>Only present in suite mode when at least one mod is active. Per-mod tree with the mod's metadata files and its data files. See the Mods topic.</td></tr>
+</table>
+<p>The tab bar's filtering mirrors the sidebar: Explorer and Favorites show only XML tabs; Schema shows only metadata tabs; Mods shows mod files (xml + metadata) and hides them from every other tab.</p>
+
+<h2>Search / Filter Bar</h2>
+<p>The search box at the top of the sidebar filters the visible files by folder name or file name. While a search is active, all folders expand so matches are visible without manual clicks. The search state is per-tab and persists across app restarts.</p>
+
+<h2>Context Menus</h2>
+<p>Right-click a folder for:</p>
+<ul>
+<li><strong>Show in Explorer</strong> &mdash; open the folder in the OS file browser.</li>
+<li><strong>Copy full path</strong> &mdash; copy the absolute path to the clipboard.</li>
+<li><strong>Rename Folder</strong> &mdash; prompt for a new name; renames on disk and rewrites open tabs / editor state to the new path.</li>
+<li><strong>New Folder</strong> &mdash; creates a folder at the data root with a stub <code>.metadata</code> file inside.</li>
+<li><strong>New XML File&hellip;</strong> &mdash; creates a new XML file inside this folder with a minimal <code>&lt;root&gt;</code> template. Opens the file in a new tab automatically.</li>
+<li><strong>Source-control actions</strong> &mdash; if a VCS provider is connected (see Source Control topic), the folder's TortoiseSVN / TortoiseGit commands appear below a divider: Commit, Update, Log, Revert, Diff, etc.</li>
+</ul>
+<p>Right-click a file for:</p>
+<ul>
+<li><strong>Show in Explorer</strong>, <strong>Copy full path</strong>.</li>
+<li><strong>Rename</strong> &mdash; same behavior as folder rename but at the file level.</li>
+<li><strong>Add to favorite group</strong> &mdash; one entry per favorites group you have.</li>
+<li><strong>Source-control actions</strong> &mdash; file-scope TortoiseProc / TortoiseGitProc commands when a provider is connected.</li>
+</ul>
+
+<h2>Status Pips</h2>
+<p>When source control is connected, each file and folder gets a small colored pip next to its name indicating version-control status (modified, added, unversioned, conflicted, etc). Folder pips roll up the worst-case status of their contents. See the Source Control topic for the palette and semantics.</p>
+
+<h2>Dragging</h2>
+<ul>
+<li><strong>Drag a file onto the tab bar</strong> &mdash; opens it (same as clicking).</li>
+<li><strong>Drag a file out of the main window</strong> &mdash; opens it in a new detached window at the drop point.</li>
+</ul>
+
+<h2>Resizing</h2>
+<p>Drag the vertical divider between the sidebar and the editor to resize. Width persists across restarts.</p>`,
+
+'xml-interactions': `<h1>XML File Interactions</h1>
+<h2>Clicking Attribute Values</h2>
+<ul>
+<li><strong>Bool/Int-Bool values:</strong> Single click toggles <code>true</code>/<code>false</code> or <code>1</code>/<code>0</code>. Drag-selecting or double-clicking selects text normally instead.</li>
+<li><strong>FK Dropdown values (node-dropdown):</strong> Single click opens a filterable picker showing all valid IDs from the source table. Has a 250ms delay to allow double-click word selection.</li>
+<li><strong>FK List values (node-list):</strong> Single click opens a multi-select picker with checkboxes. Ctrl+click on any entry navigates to that ID.</li>
+<li><strong>Color hex values (#RRGGBB):</strong> A color swatch appears overlaid on the hash. Clicking the swatch opens the native color picker.</li>
+</ul>
+
+<h2>Ctrl+Click</h2>
+<ul>
+<li><strong>Ctrl+click an FK value:</strong> Navigate to the referenced ID in the source table's XML file. Scrolls to and highlights the target.</li>
+<li><strong>Ctrl+click an attribute name:</strong> Navigate to the attribute's definition in the schema metadata file. If the attribute doesn't exist in the schema, a <code>&lt;!--FIELD_NEEDED--&gt;</code> comment is inserted at the appropriate location.</li>
+<li><strong>Ctrl+click an FK in a dropdown/picker:</strong> Navigate to that entry without selecting it.</li>
+<li><strong>Ctrl+click an invalid FK reference:</strong> Navigates to the best-matching ID in the target table (by prefix similarity).</li>
+<li><strong>Ctrl+click a tag name:</strong> Opens the Reference Panel (read-only view of the same file) scrolled to that node. See the Reference Panel topic for details.</li>
+</ul>
+
+<h2>Right-Click</h2>
+<ul>
+<li><strong>Right-click an attribute name or value:</strong> Immediately deletes the entire attribute (no confirmation). Eats one trailing space.</li>
+<li><strong>Right-click a node on its name:</strong> Shows a confirmation dialog to delete the entire node and its children.</li>
+</ul>
+
+<h2>Document Tab Interactions</h2>
+<ul>
+<li><strong>Left-click the active document tab:</strong> Shows "Changes Since Save" diff if the file is modified.</li>
+<li><strong>Right-click a tab:</strong> Context menu with: Show changes, Revert all changes, Favorites management, Center explorer/schema, Close, Close others.</li>
+<li><strong>Drag a tab within the bar:</strong> Reorder tabs.</li>
+<li><strong>Drag a tab outside the window:</strong> Detach into a new floating window (or onto an existing detached window).</li>
+</ul>
+
+<h2>Hover</h2>
+<p>Hovering over an attribute name for 0.5 seconds shows a tooltip with the attribute's description, type, and FK source table (if applicable). Tooltips are suppressed when the window is not focused.</p>`,
+
+'schema-interactions': `<h1>Schema File Interactions</h1>
+<h2>node_source Values</h2>
+<ul>
+<li><strong>Click a node_source value:</strong> Opens a dropdown of all available table names. Select one to replace the value.</li>
+<li><strong>Ctrl+click a node_source value:</strong> Navigate to the target table's metadata file.</li>
+</ul>
+
+<h2>FIELD_NEEDED Comments</h2>
+<p>When you Ctrl+click an attribute name in an XML file that doesn't exist in the schema, a <code>&lt;!--FIELD_NEEDED: attributeName--&gt;</code> comment is inserted into the schema file at the appropriate location.</p>
+<ul>
+<li><strong>Right-click a FIELD_NEEDED comment:</strong> Shows a template picker with attribute type options (Bool, Int, Float, String, FK Dropdown, FK List, etc.). Selecting a template replaces the comment with a properly formatted attribute definition.</li>
+</ul>
+
+<h2>Syntax Highlighting</h2>
+<ul>
+<li><strong>Header attributes</strong> (<code>key</code> on attributes, <code>id</code> on sub_nodes): Bold with distinctive colors.</li>
+<li><strong>Sub-node tags:</strong> Displayed in purple.</li>
+<li><strong>Standard attributes:</strong> Normal XML coloring.</li>
+</ul>`,
+
+'schema-vs-xml': `<h1>Schema vs XML Files</h1>
+<h2>XML Files (.xml)</h2>
+<p>XML files contain the actual game data. Each folder (e.g., <code>1_BuildingType/</code>) contains one or more XML files with entries of that type. Each entry is a node with attributes:</p>
+<pre><code>&lt;building_type id="Factory" display_name="Factory"
+    icon_name="factory" sort_order="10" /&gt;</code></pre>
+
+<h2>Schema/Metadata Files (.metadata)</h2>
+<p>Each folder contains a <code>_TableName.metadata</code> file that defines the schema for that table's XML entries. It specifies:</p>
+<ul>
+<li>What node name entries use (e.g., <code>building_type</code>)</li>
+<li>What attributes are valid, their types, defaults, and tooltips</li>
+<li>What sub-nodes are allowed and what attributes they have</li>
+<li>FK relationships to other tables via <code>node_source</code></li>
+</ul>
+
+<h2>SharedMetaData.metadata</h2>
+<p>Lives at the root of the data folder. Defines universal attributes inherited by every table: <code>id</code>, <code>display_name</code>, <code>copy_from</code>, <code>is_partial_record</code>, <code>description</code>, <code>internal_notes</code>, etc. Individual table schemas can override these with <code>type="existing-override"</code>.</p>
+
+<h2>Tab Bar Filtering</h2>
+<p>The tab bar filters by context: when the sidebar is on Explorer or Favorites, only XML file tabs are shown. When on Schema, only metadata tabs are shown. All tabs remain open internally; the view just filters.</p>`,
+
+'local-search': `<h1>Local Find & Replace</h1>
+<p>Open with <kbd>Ctrl+F</kbd> (find) or <kbd>Ctrl+H</kbd> (find+replace, focus on replace field). The panel appears at the top of the editor.</p>
+
+<h2>Toggle Buttons</h2>
+<table>
+<tr><th>Button</th><th>Label</th><th>Function</th></tr>
+<tr><td><kbd>*?</kbd></td><td>Wildcard</td><td>Treat <code>*</code> as "match anything". Mutually exclusive with Regex.</td></tr>
+<tr><td><kbd>.*</kbd></td><td>Regex</td><td>Full regular expression matching. Mutually exclusive with Wildcard.</td></tr>
+<tr><td><kbd>Aa</kbd></td><td>Match Case</td><td>Case-sensitive search.</td></tr>
+<tr><td><kbd>ab</kbd></td><td>Whole Word</td><td>Only match complete words.</td></tr>
+<tr><td><kbd>sel</kbd></td><td>In Selection</td><td>Restrict search/replace to the current text selection.</td></tr>
+</table>
+
+<h2>Replace Behavior</h2>
+<ul>
+<li><strong>Enter in replace field:</strong> Deselects any selected text in the replace field, then executes Replace All immediately.</li>
+<li>The search state (query, replace text, toggles, panel open/closed) persists when switching between tabs.</li>
+</ul>
+
+<h2>History</h2>
+<p>Press <kbd>&darr;</kbd> in either field to recall prior local-scope searches or replaces. See the Search History topic.</p>`,
+
+'search-history': `<h1>Search History</h1>
+<p>Every find and replace input in AXE has a Visual Studio&ndash;style history dropdown for recalling prior entries without retyping. Useful for cycling through the last few things you searched for or replaced with.</p>
+
+<h2>Opening the Dropdown</h2>
+<ul>
+<li><strong>Down arrow</strong> in an empty or focused input opens the dropdown with the most-recent entry at the top.</li>
+<li><strong>Up arrow</strong> at the top of the dropdown closes it. Otherwise navigates up the list.</li>
+<li><strong>Enter</strong> or <strong>Space</strong> applies the highlighted entry into the input.</li>
+<li><strong>Escape</strong> dismisses the dropdown without changing the input.</li>
+<li>Clicking an entry with the mouse also applies it.</li>
+</ul>
+
+<h2>Four Independent Caches</h2>
+<p>Histories are scoped so unrelated contexts don't pollute each other:</p>
+<table>
+<tr><th>Cache</th><th>Fed By</th></tr>
+<tr><td><code>local-find</code></td><td>Find field of the in-editor search panel (<kbd>Ctrl+F</kbd>).</td></tr>
+<tr><td><code>local-replace</code></td><td>Replace field of the in-editor search panel.</td></tr>
+<tr><td><code>global-find</code></td><td>Find field of the global search panel (<kbd>Ctrl+Shift+F</kbd>).</td></tr>
+<tr><td><code>global-replace</code></td><td>Replace field of the global search panel.</td></tr>
+</table>
+<p>Find and replace histories don't cross-pollinate: typing a search term doesn't add it to the replace cache, and vice versa. Local and global don't share either &mdash; the idea is that what you search for within a single file is often different from what you search for across the project.</p>
+
+<h2>When Entries Are Recorded</h2>
+<ul>
+<li>Pressing Enter in the find field while searching &mdash; records to the corresponding find cache.</li>
+<li>Clicking the Search button &mdash; records to the find cache.</li>
+<li>Clicking Replace or Replace All &mdash; records to BOTH the replace cache and the find cache, since a replace implies a search also just ran.</li>
+<li>Empty strings are never recorded. Exact duplicates move to the top rather than producing repeats.</li>
+</ul>
+
+<h2>Persistence</h2>
+<p>Histories are in-memory only for the current session. Closing and reopening AXE starts each cache empty again.</p>`,
+
+'global-search': `<h1>Global Find & Replace</h1>
+<p>Open with <kbd>Ctrl+Shift+F</kbd> (find) or <kbd>Ctrl+Shift+H</kbd> (replace). The panel docks at the bottom of the editor area, above the status bar.</p>
+
+<h2>Search Scope</h2>
+<p>The search scope is determined by the active file's type when the search is performed:</p>
+<ul>
+<li><strong>XML file active:</strong> Searches all .xml files.</li>
+<li><strong>Schema file active:</strong> Searches all .metadata files.</li>
+<li>The scope is <strong>locked at search time</strong> &mdash; switching tabs doesn't change your results.</li>
+</ul>
+
+<h2>Toggle Buttons</h2>
+<p>Same as local search: Wildcard, Regex, Match Case, Whole Word, plus a Replace toggle (<kbd>R</kbd>).</p>
+
+<h2>Results</h2>
+<ul>
+<li>Click any result to open the file and jump to that line, with the search text highlighted.</li>
+<li>Results show file-by-file grouping with match counts.</li>
+</ul>
+
+<h2>Replace</h2>
+<ul>
+<li><strong>Replace All:</strong> Replaces across all matching files and writes to disk immediately. Works even if you haven't clicked Search first &mdash; it treats the current find-input value as an implicit search.</li>
+<li><strong>Replace in file:</strong> Button appears per file group to replace in just that file.</li>
+<li><strong>Undo:</strong> Up to 5 recent replace operations can be undone (only reverts files that haven't been further modified).</li>
+<li><strong>Enter in replace field:</strong> Executes Replace All.</li>
+<li><strong>Status banner:</strong> After a Replace All, a one-line banner appears under the search bar for a few seconds showing "Replaced N occurrence(s) in M file(s)." If the search matched nothing, you instead get "No matches for <em>X</em>." so the button click always has visible feedback.</li>
+</ul>
+
+<h2>History</h2>
+<p>Press <kbd>&darr;</kbd> in either field to recall prior searches or replaces. See the Search History topic.</p>
+
+<h2>Minimize/Restore</h2>
+<p>The panel can be minimized (results hidden, search bar stays visible). The replace bar also stays visible when in replace mode. <kbd>Escape</kbd> minimizes first, then closes on second press.</p>`,
+
+'detached-windows': `<h1>Detached Windows</h1>
+<p>Tabs can be torn off into separate floating windows for multi-monitor workflows.</p>
+
+<h2>Creating a Detached Window</h2>
+<ul>
+<li><strong>Drag a tab outside the window:</strong> A new detached window appears at the drop position.</li>
+<li><strong>Drag a file from the sidebar outside the main window:</strong> Opens the file in a new detached window.</li>
+</ul>
+
+<h2>Moving Tabs Between Windows</h2>
+<ul>
+<li>Drag a tab from any window and drop it on another window to move it there.</li>
+<li>Works between: main &rarr; detached, detached &rarr; main, detached &rarr; detached.</li>
+</ul>
+
+<h2>Detached Window Features</h2>
+<ul>
+<li>Full editor with local search, syntax highlighting, FK interactions, color picker, etc.</li>
+<li>Own tab bar showing ALL tabs (no schema/xml filtering).</li>
+<li>No sidebar &mdash; but clicking a tab tells the main window's sidebar to scroll to that file.</li>
+<li>No global search panel &mdash; but global search/replace operations affect files in detached windows.</li>
+<li>Named "AXE Detached 1", "AXE Detached 2", etc. in the OS taskbar.</li>
+</ul>
+
+<h2>Closing</h2>
+<p>Closing a detached window shows a confirmation dialog, then closes all its tabs (with unsaved-changes prompts). Closing the main window closes all detached windows.</p>
+
+<h2>Session Persistence</h2>
+<p>Detached window positions, sizes, and their tab lists are saved across app restarts.</p>`,
+
+validator: `<h1>XML Validator</h1>
+<p>Click the error/warning count in the status bar to open the validator window. It runs as an independent window with its own taskbar entry.</p>
+
+<h2>Validation Checks</h2>
+<ol>
+<li><strong>Invalid FK references:</strong> node-dropdown/node-list values pointing to nonexistent IDs. LookupSwaps suggestions are provided when available.</li>
+<li><strong>Invalid copy_from:</strong> ID doesn't exist in the same table.</li>
+<li><strong>Invalid node_source:</strong> Target table doesn't exist in metadata. Near-match suggestions offered.</li>
+<li><strong>Unknown attributes:</strong> Attribute not defined in schema for the current node context.</li>
+<li><strong>Duplicate IDs:</strong> Within same table (unless <code>is_partial_record="true"</code>).</li>
+<li><strong>Type mismatches:</strong> Non-numeric value in int/float fields.</li>
+<li><strong>Malformed XML:</strong> Unclosed tags, structural issues.</li>
+<li><strong>Invalid existing-override:</strong> Overriding an attribute not in SharedMetaData.</li>
+<li><strong>Wrong-name nodes:</strong> Node name doesn't match schema's node_name.</li>
+<li><strong>Cross-layer references (suite mode):</strong> An FK, copy_from, or lang-string reference crossing a forbidden layer boundary &mdash; see <em>Suite Mode &amp; DLC Layers</em>.</li>
+<li><strong>Structural issues (suite mode):</strong> An expansion folder with no base-game counterpart, or a stray <code>.metadata</code> file in an expansion. Clicking these opens the offending folder in Explorer.</li>
+</ol>
+
+<h2>Filtering</h2>
+<p>Toggle buttons at the top filter between All, Errors only, or Warnings only.</p>
+
+<h2>Navigation</h2>
+<p>Click any entry to jump to that file and line in the editor. The specific text (attribute name or value) is highlighted for 3 seconds.</p>
+
+<h2>Right-Click Suggestions</h2>
+<p>For entries with suggestions (e.g., "Did you mean: X?" or "LookupSwaps indicates you might mean: X?"), right-click to:</p>
+<ul>
+<li><strong>Replace in this file:</strong> Fix just the occurrence in the one file.</li>
+<li><strong>Replace all:</strong> Fix across all files, then re-validate.</li>
+</ul>
+
+<h2>Tables with <code>never_validate="true"</code></h2>
+<p>Some tables (like A5ObjectRoot) have <code>never_validate="true"</code> on their metadata root. These tables are skipped during validation but still function as FK sources for other tables.</p>`,
+
+spellcheck: `<h1>Spellcheck</h1>
+<p>AXE spellchecks text content in XML and metadata files using an embedded dictionary (nspell + hunspell). Misspelled words get a red dotted underline (squiggle) in the editor and show up as warnings in the validator.</p>
+
+<h2>What Gets Checked</h2>
+<p>Spellcheck targets only fields whose content is prose &mdash; not identifiers, not paths, not code names. An attribute is checked when:</p>
+<ul>
+<li>Its schema <code>type</code> is <code>string</code> AND it declares an <code>is_localized</code> flag (either <code>true</code> for user-facing prose, or <code>false</code> for dev-facing notes &mdash; both are checked, just with different dictionaries).</li>
+<li>Its attribute name is <code>internal_notes</code> or contains <code>translation_notes</code> (always dev-facing).</li>
+<li>Inside a metadata file, all <code>tooltip</code> values are checked as dev-facing prose.</li>
+</ul>
+<p>Opaque identifier types (<code>path</code>, <code>sub_id</code>, <code>FQN</code>, <code>ClassName</code>, <code>DllName</code>, <code>MethodName</code>, node-dropdown/node-list FK values, enum-style dropdowns) are never spellchecked, regardless of flags.</p>
+<p>Attributes with <code>no_spellcheck_or_grammar="true"</code> are always skipped. Nodes with <code>no_spellcheck_or_grammar="true"</code> skip every child attribute.</p>
+
+<h2>Two Dictionaries</h2>
+<p>AXE keeps two custom dictionaries in the data root folder:</p>
+<table>
+<tr><th>File</th><th>Applies To</th></tr>
+<tr><td><code>_spellingDictionary.txt</code></td><td>Global. Words here are accepted everywhere &mdash; user-facing fields and dev-facing fields alike.</td></tr>
+<tr><td><code>_spellingDevDictionary.txt</code></td><td>Dev-only. Words here are accepted in dev-facing contexts (internal_notes, tooltips, translation_notes, string attributes with <code>is_localized="false"</code>) but NOT in user-facing prose.</td></tr>
+</table>
+<p>The split exists so that developer jargon (identifiers, abbreviations, made-up terms in notes) doesn't accidentally become accepted in the text players will see.</p>
+
+<h2>Right-Click a Squiggle</h2>
+<p>Right-clicking on an underlined word opens a context menu with:</p>
+<ul>
+<li><strong>Suggestions</strong> &mdash; up to a handful of likely corrections; clicking one replaces the word.</li>
+<li><strong>Add to dictionary</strong> &mdash; adds the word to the global custom dictionary (<code>_spellingDictionary.txt</code>). The word is accepted everywhere from now on.</li>
+<li><strong>Add to dev dictionary</strong> &mdash; only appears when the underlined word is inside a dev-facing field. Adds to <code>_spellingDevDictionary.txt</code> instead, so the word is accepted in dev contexts but would still be flagged if it appeared in a player-visible string.</li>
+<li><strong>Ignore word</strong> &mdash; ignore this word for the current session only (not persisted).</li>
+<li><strong>Ignore this node</strong> &mdash; inserts <code>no_spellcheck_or_grammar="true"</code> on the enclosing XML node, permanently silencing spellcheck inside it.</li>
+</ul>
+<p>The dev dictionary is never added to automatically &mdash; even in dev-flagged fields, you explicitly choose "Add to dictionary" (global) or "Add to dev dictionary" (dev-only) per word.</p>
+
+<h2>Homoglyphs and Mixed Scripts</h2>
+<p>Words containing characters from multiple scripts (e.g. Latin letters mixed with visually-identical Cyrillic lookalikes) are flagged as "mixed script / homoglyph" warnings. The validator often suggests the ASCII-normalized version so you can see what the word "should" look like.</p>
+
+<h2>Grammar Checking</h2>
+<p><em>Not ready yet.</em> AXE has stub integration with the Harper grammar engine, but grammar checking is untested and not a recommended workflow at this point. Expect this section to grow once the feature has been validated against real game data.</p>`,
+
+'source-control': `<h1>Source Control</h1>
+<p>AXE integrates with TortoiseSVN and TortoiseGit to show version-control status inline and invoke their dialogs from within the editor. It does NOT implement its own commit / diff / merge UI &mdash; it's a dispatcher: you get the status pips and the menu entries here, and clicking an entry launches the corresponding Tortoise window. For how those windows actually work, see the <a href="https://tortoisesvn.net/docs/release/TortoiseSVN_en/index.html">TortoiseSVN documentation</a> or the <a href="https://tortoisegit.org/docs/tortoisegit/">TortoiseGit documentation</a>.</p>
+
+<h2>Providers</h2>
+<p>Three providers are known to AXE, resolved in priority order:</p>
+<table>
+<tr><th>Provider</th><th>Requirements</th></tr>
+<tr><td>TortoiseSVN</td><td><code>TortoiseProc.exe</code> and <code>svn.exe</code> both locatable; data root is inside an SVN working copy; <code>TSVNCache.exe</code> is running.</td></tr>
+<tr><td>TortoiseGit</td><td><code>TortoiseGitProc.exe</code> and <code>git.exe</code> both locatable; data root has an ancestor <code>.git</code> folder; <code>TGitCache.exe</code> is running.</td></tr>
+<tr><td>Unity Version Control</td><td>Stub; always listed as "not installed" for now. Placeholder for future integration.</td></tr>
+</table>
+<p>Only one provider is "active" at a time &mdash; the first in priority order that's fully connected. If none is connected, all source-control UI hides.</p>
+
+<h2>Plugins Chip</h2>
+<p>A chip in the bottom-right of the status bar shows per-provider dots:</p>
+<ul>
+<li><strong>Green</strong> &mdash; installed, connected, cache alive. Full functionality available.</li>
+<li><strong>Amber</strong> &mdash; installed but not fully wired. Hover to see the specific warning (e.g. "TSVNCache disabled &mdash; re-enable in TortoiseSVN settings").</li>
+<li><strong>Gray</strong> &mdash; not installed on this machine.</li>
+</ul>
+<p>Clicking the chip opens a pinned tooltip showing each provider's detail line (repo root, install path, warnings). A re-detect button at the bottom re-runs discovery after you install or configure a tool.</p>
+
+<h2>Status Pips</h2>
+<p>When a provider is active, small colored pips appear next to files and folders in the sidebar, and next to tab labels in the tab bar:</p>
+<table>
+<tr><th>Status</th><th>Meaning</th></tr>
+<tr><td>Clean</td><td>No pip shown.</td></tr>
+<tr><td>Modified</td><td>File content differs from the committed version.</td></tr>
+<tr><td>Added</td><td>File has been added to version control but not yet committed.</td></tr>
+<tr><td>Deleted</td><td>File has been deleted or is missing from the working tree.</td></tr>
+<tr><td>Unversioned</td><td>File exists but is not tracked.</td></tr>
+<tr><td>Conflicted</td><td>Merge or update produced unresolved conflicts.</td></tr>
+<tr><td>Ignored</td><td>No pip shown (same as clean).</td></tr>
+</table>
+<p>Folder pips show the "worst" status of any file inside: a folder containing one conflicted file and ten clean files shows a conflict pip.</p>
+
+<h2>Dual-Layer Change Gutter</h2>
+<p>Inside an open editor, the narrow gutter to the left of line numbers shows TWO layers of change indication:</p>
+<ul>
+<li><strong>Yellow bar</strong>: this line has unsaved edits relative to the last save (in-memory only).</li>
+<li><strong>Orange bar</strong>: this line differs from the VCS base revision (HEAD for Git, BASE for SVN) &mdash; a committed-or-not-yet-committed change that's already on disk.</li>
+</ul>
+<p>When both apply to a single line, yellow is drawn in front and orange peeks behind as a narrow fringe so you can still see that the line is uncommitted. When the file is untracked or no provider is connected, only the yellow layer appears.</p>
+
+<h2>Context Menu Entries</h2>
+<p>When a provider is connected, the right-click menu on sidebar items and tabs grows to include source-control commands under a divider. Menu entries are named using the active provider's vocabulary (e.g. "SVN Commit" vs "Git Commit"). Each entry launches the appropriate Tortoise dialog:</p>
+<p><strong>File scope</strong> (right-click a file or its tab):</p>
+<ul>
+<li>Commit, Update, Revert, Log, Diff, Blame, Add, Lock, Unlock</li>
+<li>Conflict resolution entries (only when the file is in a conflicted state)</li>
+</ul>
+<p><strong>Folder scope</strong> (right-click a folder in the sidebar):</p>
+<ul>
+<li>All file-scope entries, plus recursive operations (Cleanup, Check for Modifications)</li>
+<li>Push / Pull / Fetch / Sync (Git only)</li>
+<li>Switch / Rebase / Merge (Git only)</li>
+</ul>
+<p>Selecting any entry hands control off to TortoiseProc / TortoiseGitProc. AXE waits for the dialog to close, then re-runs the relevant status refresh so pips stay accurate.</p>
+
+<h2>Status Refresh</h2>
+<p>Status is refreshed on:</p>
+<ul>
+<li>App startup, once a provider is resolved.</li>
+<li>Every save of a file in the data root (that single file is re-queried).</li>
+<li>When a TortoiseProc / TortoiseGitProc dialog exits (the user probably did something).</li>
+<li>Every 30 seconds in the background, while AXE has focus &mdash; handles cases where the cache was toggled on/off externally, or an external tool modified files.</li>
+<li>On window focus gain, as an immediate refresh.</li>
+</ul>
+
+<h2>Re-detect</h2>
+<p>Use the re-detect button in the Plugins chip's popup to force a fresh discovery after you install or reconfigure a VCS tool mid-session. This clears the cached tool-path lookups and re-runs everything.</p>`,
+
+persistence: `<h1>Data Persistence</h1>
+<h2>Session File</h2>
+<p><strong>Location:</strong> <code>_user_editor_session.json</code> in the data root folder.</p>
+<p>Stores per-session state: open tabs, active tab, cursor/scroll positions, expanded folders, sidebar width, theme, window bounds, detached window state, validator window position, favorites, and the global-search MODS toggle.</p>
+<p class="clickable" onclick="window.arcenApi?.getDataRoot?.().then(r => window.arcenApi?.showInFolder?.(r + '/_user_editor_session.json'))">Click to show in Explorer</p>
+
+<h2>Settings Files</h2>
+<p><strong>Location:</strong> <code>%APPDATA%/ArcenSettings/XmlEditor/</code> (or the platform equivalent on macOS / Linux).</p>
+<p>Two files live there:</p>
+<ul>
+<li><code>xmlEdLast.json</code> &mdash; the most recently used data folder. Auto-loaded on startup.</li>
+<li><code>xmlEdRecent.json</code> &mdash; up to 30 recent data folders, most-recent first, shown in the "Change Data Folder" picker.</li>
+</ul>
+<p>Storing these per-user (rather than next to the exe) keeps one authoritative location regardless of where the exe lives or how it was built.</p>
+
+<h2>What's Persisted</h2>
+<table>
+<tr><th>Data</th><th>Where</th><th>When Saved</th></tr>
+<tr><td>Open tabs &amp; order</td><td>Session file</td><td>On change + app close</td></tr>
+<tr><td>Cursor positions &amp; scroll</td><td>Session file</td><td>On tab switch + app close</td></tr>
+<tr><td>Text selection</td><td>In-memory only</td><td>On tab switch (lost on restart)</td></tr>
+<tr><td>Favorites</td><td>Shared file</td><td>Immediately on change</td></tr>
+<tr><td>Window positions/sizes</td><td>Session file</td><td>On app close</td></tr>
+<tr><td>Theme (light/dark)</td><td>Session file</td><td>On change</td></tr>
+<tr><td>Sidebar width</td><td>Session file</td><td>On change</td></tr>
+<tr><td>Search query (global)</td><td>In-memory</td><td>Persists while panel open</td></tr>
+<tr><td>Search state (local)</td><td>In-memory</td><td>Persists across tab switches</td></tr>
+</table>`,
+
+retarget: `<h1>Retargeting the Data Folder</h1>
+<p>The editor can point at either of two layouts:</p>
+<ul>
+<li><strong>An Arcen game install root</strong> &mdash; a folder containing <code>GameData/Configuration/SharedMetaData.metadata</code>. This opens in <strong>suite mode</strong>, where the base game plus its expansions/DLCs are edited together. See <em>Suite Mode &amp; DLC Layers</em>.</li>
+<li><strong>A standalone data folder</strong> &mdash; a folder with <code>SharedMetaData.metadata</code> directly inside and subfolders containing <code>.metadata</code> files. This opens in <strong>narrow mode</strong> (the original single-folder behavior), intended for non-Arcen titles.</li>
+</ul>
+
+<h2>On First Launch</h2>
+<p>If no valid data folder is remembered, the editor opens empty and you click <strong>Change Data Folder</strong> to pick one. The chosen path is recorded in <code>xmlEdLast.json</code> and added to the top of <code>xmlEdRecent.json</code> in <code>%APPDATA%/ArcenSettings/XmlEditor/</code>.</p>
+
+<h2>Changing the Target</h2>
+<p>Click the folder icon in the status bar (bottom-right). A picker opens listing your recent folders (scrolling past ten), with an <strong>Other location&hellip;</strong> entry at the bottom that triggers the OS folder picker. Selecting any entry switches the editor to that folder, reopening the tabs and detached windows that were last saved for it. Any detached windows from the previous folder are closed first &mdash; their layout is preserved in the old folder's session file, so switching back later restores them.</p>
+
+<h2>Recent Folders</h2>
+<p>The picker remembers up to 30 recent folders in most-recent-first order. Entries that no longer exist on disk are dropped the first time you try to pick them.</p>
+
+<h2>Multiple Instances</h2>
+<p>You can run multiple instances of the editor, each pointing at a different data folder. Each instance maintains its own session independently inside its target folder.</p>`,
+
+'suite-mode': `<h1>Suite Mode &amp; DLC Layers</h1>
+<p>When the editor is pointed at an Arcen game install root (a folder containing <code>GameData/Configuration/SharedMetaData.metadata</code>) it runs in <strong>suite mode</strong>: the base game and every installed expansion are edited together as one merged data set.</p>
+
+<h2>Layers</h2>
+<p>Every file belongs to a <strong>layer</strong>:</p>
+<ul>
+<li><strong>Base</strong> &mdash; the core game data, in <code>GameData/Configuration/</code>.</li>
+<li><strong>DLC1, DLC2, &hellip;</strong> &mdash; expansions, in <code>Expansions/&lt;folder&gt;/</code>. A folder under <code>Expansions/</code> is an active expansion only if it contains an <code>ExpansionInstallation.txt</code> marker. Expansions are numbered by folder sort order.</li>
+</ul>
+<p>Expansion files appear in the same table folders as base files, as if they had never been split out. A file from an expansion is shown with a <code>[DLC&lt;N&gt;]</code> tag in the sidebar and on its tab (unless its filename already ends with the matching <code>_DLC&lt;N&gt;</code> suffix). Within a folder, base files are listed first, then each DLC's files in order.</p>
+
+<h2>Schemas</h2>
+<p>Schemas come only from the base game. Expansions add data files into existing table folders; they never define new tables or schemas. A DLC file is validated against the base folder's schema. A <code>.metadata</code> file found inside an expansion is ignored and flagged in the validator.</p>
+
+<h2>Cross-Layer Reference Rules</h2>
+<p>So the base game stays shippable without any expansion, and expansions stay independent of one another, references are constrained by layer:</p>
+<ul>
+<li>Base game data may reference <strong>only</strong> base game data.</li>
+<li>A DLC may reference the base game and its <strong>own</strong> content &mdash; but not another DLC.</li>
+</ul>
+<p>The validator flags any FK, <code>copy_from</code>, or <code>lang-string</code> reference that crosses a forbidden boundary. FK dropdown pickers likewise only offer values the current file is allowed to reference. (<code>LookupSwaps</code> is exempt &mdash; swap entries are fallbacks and are never validated.)</p>
+
+<h2>Creating Files in a Layer</h2>
+<p><strong>New XML File&hellip;</strong> on a folder asks which layer the file should go in &mdash; the base game or a specific DLC. The target subfolder is created inside that expansion if it doesn't exist yet.</p>
+
+<h2>Structural Checks</h2>
+<p>The validator reports two layout problems: an expansion folder with no matching base-game folder (usually a typo &mdash; its files aren't loaded), and a stray <code>.metadata</code> file inside an expansion. Clicking either entry opens the offending folder in Explorer.</p>
+
+<h2>Narrow Mode</h2>
+<p>Pointing the editor directly at a single data folder (one with <code>SharedMetaData.metadata</code> inside) runs in <strong>narrow mode</strong> &mdash; one layer, no expansions, no cross-layer rules. This is the original behavior, intended for non-Arcen titles.</p>`,
+
+mods: `<h1>Mods</h1>
+<p>In suite mode the editor also scans for <strong>mods</strong> — community-authored content that adds to or modifies the base game. Mods are kept deliberately separate from the main edit surface: they live behind their own sidebar tab and are excluded from global search by default, so the main game and DLC content stays uncluttered.</p>
+
+<h2>Where Mods Come From</h2>
+<p>Three source directories are scanned in suite mode:</p>
+<ul>
+<li><code>&lt;DATA_ROOT&gt;/XMLMods/</code> &mdash; locally installed, distributed mods (the usual workflow).</li>
+<li><code>&lt;DATA_ROOT&gt;/XMLMods_NonDistributed/</code> &mdash; locally installed, private mods.</li>
+<li>Steam Workshop subscriptions for this game &mdash; resolved automatically via the Steam install path + library folders + the app id from <code>steam_appid.txt</code>.</li>
+</ul>
+<p>A subdirectory is recognized as a mod by the presence of <em>either</em> <code>ModDetails.xml</code> (the newer HotM/Cassowary format) or <code>ModDetails.txt</code> (the older AIW2 format). Both encode the same essentials — display name, author, color, framework flag, disabled state, and (in the XML format) declared dependencies on DLCs and other mods. A disabled mod is fully skipped: not discovered, not validated, not shown. A mod that ships its own <code>GameData/Configuration/</code> subtree (a <em>total conversion</em>) is also skipped here — those are loaded as their own data root via the data-folder picker.</p>
+<p><strong>HotM format.</strong> Disabled is <code>is_disabled="true"</code> on the <code>&lt;mod_data&gt;</code> element. Display name and color come from the <code>color_for_display</code> attribute plus the first <code>&lt;lang id="English"&gt;</code> block.</p>
+<p><strong>AIW2 format.</strong> A four- or five-line plain-text file: display name, author, short code, hex color (no leading <code>#</code>), and optionally the literal word <code>disabled</code> on line five. Mod and DLC dependencies live in two optional sidecar files: <code>RequiredExpansions.txt</code> lists DLC folder names one per line, and <code>RequiredMods.txt</code> lists mod folder names. When absent, the mod is conservatively allowed to reference base + itself only; row-level <code>required_expansion_list</code> / <code>required_mod_list</code> still widen things case by case.</p>
+<p>Display names from both formats are run through a rich-text stripper, so a name like <code>&lt;color=#ffc000&gt;Radiant&lt;/color&gt; Maps</code> (Unity markup some authors embed for the in-game UI) shows as just <code>Radiant Maps</code> in the sidebar.</p>
+
+<h2>The MODS Sidebar Tab</h2>
+<p>When at least one mod is active a fourth sidebar tab labeled <strong>Mods</strong> appears. Each mod is a top-level row showing a color swatch and the display name parsed from its ModDetails file. Workshop and non-distributed mods carry a small <code>[workshop]</code> or <code>[non-distributed]</code> tag so the source is visible at a glance.</p>
+<p>Expanding a mod shows two things:</p>
+<ul>
+<li>Its mod-level files as italicized direct children &mdash; for HotM mods that's <code>ModDetails.xml</code>, <code>ModTranslation.xml</code>, and <code>ModSortOrder.txt</code>; for AIW2 mods it's <code>ModDetails.txt</code>, <code>ModDescription.txt</code>, and the various flag files when present. Click any to open it.</li>
+<li>The table folders the mod contributes to, each expanding to the mod's files within. A <code>+ New XML file&hellip;</code> entry inside an expanded folder creates a file inside the mod's copy of that folder.</li>
+</ul>
+<p>Right-clicking a mod row offers <strong>Show in Explorer</strong>, copy mod-folder path, and <strong>New Folder in this mod&hellip;</strong> (useful when introducing a brand-new mod-owned table).</p>
+
+<h2>Tab Filtering</h2>
+<p>Mod file tabs are <strong>only visible when the MODS sidebar tab is active</strong>, mirroring how schema tabs are only visible on the Schema sidebar. Opening a mod file from anywhere (Favorites, FK navigation, etc.) auto-switches the sidebar to MODS so the tab becomes visible.</p>
+<p>When a mod file leaks into a non-MODS view (e.g. you favorite one and look at it from the Favorites tab, or you have one open as the active tab), its label is appended with <code>[Mod: &lt;Display Name&gt;]</code> so it's clear which mod owns it.</p>
+
+<h2>Cross-Layer Rules</h2>
+<p>Mods are looser than DLCs but still rule-bound:</p>
+<ul>
+<li>A mod may reference the <strong>base game</strong> always, <strong>itself</strong> always, plus any DLCs in its <code>required_expansions</code> and any mods in its <code>required_mods</code> (both from <code>ModDetails.xml</code>).</li>
+<li>Base and DLC content may <strong>never</strong> reference a mod &mdash; official content can't depend on a mod.</li>
+<li>Per-row widening still works: a row carrying <code>required_expansion_list="OtherDLC"</code> or <code>required_mod_list="OtherMod"</code> may reference content from those layers since the engine only loads the row when those layers are present.</li>
+</ul>
+<p>The validator flags any FK, <code>copy_from</code>, or <code>lang-string</code> reference that crosses a forbidden mod boundary, naming the mod by its display name (e.g. <code>Mod: Hack Be Gone</code>) so you don't have to decode layer ids.</p>
+
+<h2>Global Search MODS Filter</h2>
+<p>The global-search panel has an extra <strong>MODS</strong> filter alongside XML and META. It defaults to <strong>off</strong> so mod files don't pollute results unless you ask for them. Unlike the other filters, this one is <strong>remembered</strong> across sessions &mdash; turn it on if you do mod-heavy work and AXE will keep it on for you.</p>
+
+<h2>Schema Extensions</h2>
+<p>Mods often need extra fields or sub-nodes that aren't part of the base game's schema &mdash; for example, an AIW2 mod whose DLL reads a <code>&lt;charge_type id=&quot;C1&quot; name=&quot;Void Energy&quot; .../&gt;</code> sub-node inside <code>&lt;GameEntity&gt;</code> rows it ships. Without help, the validator flags those as unknown attributes / sub-nodes.</p>
+<p><strong>The fix:</strong> drop a small <code>_&lt;TableName&gt;.metadata</code> inside the mod's folder for that table. Its contents are merged into the base schema <em>only when validating files belonging to this mod (and to mods that require this one)</em>. Example: a Reclaimers mod could ship <code>Reclaimers/GameEntity/_GameEntity.metadata</code> containing just the new <code>&lt;sub_node id=&quot;charge_type&quot;&gt;</code> definition; everywhere else (base game, DLCs, other mods) <code>charge_type</code> stays flagged as unknown, exactly as it should.</p>
+<p>Composition is additive &mdash; extension attributes are appended, never overriding base values on key collisions. Extension sub_nodes either add new attributes to an existing sub_node by id, or introduce a brand-new one.</p>
+
+<h2>Validation</h2>
+<p>Mod files are validated as first-class citizens: their errors appear in the validator window alongside base/DLC errors, and the status bar's error/warning counts include them. The file paths shown for mod entries (e.g. <code>XMLMods/HackBeGone/ComplexityType/...</code>) retain their layer prefix because that's the most useful identifier for a mod file.</p>
+
+<h2>Total Conversions</h2>
+<p>Total conversions ship their own complete <code>GameData/Configuration/</code> tree &mdash; they're effectively their own game install. AXE detects them and skips them in mod scanning; to edit a total conversion, point AXE at its root via the data-folder picker just like you would the base game.</p>`,
+
+favorites: `<h1>Favorites</h1>
+<p>The Favorites tab in the sidebar provides quick access to frequently used files.</p>
+
+<h2>Custom Groups</h2>
+<ul>
+<li><strong>Create:</strong> Click "New Group" at the bottom of the Favorites tab. Type a name and press Enter.</li>
+<li><strong>Add files:</strong> Right-click a tab header and select a favorites group. Or right-click a file in the Explorer sidebar.</li>
+<li><strong>Remove files:</strong> Click the &times; button next to a file in the favorites list.</li>
+<li><strong>Reorder files:</strong> Drag files within a group to reorder.</li>
+<li><strong>Rename group:</strong> Right-click the group header.</li>
+<li><strong>Delete group:</strong> Click the &times; button on the group header.</li>
+<li>Each file can only be in one custom group at a time.</li>
+</ul>
+
+<h2>Auto-Managed Groups</h2>
+<p>Automatically generated groups appear at the bottom (separated by a divider labeled "Auto-managed"):</p>
+<ul>
+<li><strong>Beta:</strong> Files ending in <code>_Beta.xml</code></li>
+<li><strong>DLC1&ndash;DLC6:</strong> Files ending in <code>_DLC1.xml</code> through <code>_DLC6.xml</code></li>
+</ul>
+<p>These groups only appear if matching files exist. A file can be in both a custom group and an auto-managed group.</p>`,
+
+'schema-reference': `<h1>Schema Attribute Reference</h1>
+<h2>Root Element</h2>
+<p>Every metadata file has a <code>&lt;root&gt;</code> element with these attributes:</p>
+<table>
+<tr><th>Attribute</th><th>Description</th></tr>
+<tr><td><code>node_name</code></td><td>The XML tag name for entries in this table (e.g., <code>building_type</code>).</td></tr>
+<tr><td><code>never_validate</code></td><td>If <code>"true"</code>, this table's XML is skipped during validation. Still works as FK source.</td></tr>
+<tr><td><code>is_for_single_root</code></td><td>If <code>"true"</code>, this is a flat constants table. All attributes go directly on <code>&lt;root&gt;</code> with no child nodes or sub-nodes. No <code>node_name</code> is needed. Only malformed-XML validation is performed. Examples: ExternalConstants, ExternalVisConstants.</td></tr>
+</table>
+
+<h2>Attribute Types</h2>
+<table>
+<tr><th>Type</th><th>Description</th><th>Example Values</th></tr>
+<tr><td><code>bool</code></td><td>True/false toggle. Single-click the value to flip.</td><td><code>true</code>, <code>false</code></td></tr>
+<tr><td><code>int-bool</code></td><td>Integer boolean (0/1). Single-click flips.</td><td><code>0</code>, <code>1</code></td></tr>
+<tr><td><code>string</code></td><td>Free text. Spellchecked if <code>is_localized</code> is set.</td><td>Any text</td></tr>
+<tr><td><code>string-dropdown</code></td><td>Text from predefined options defined via <code>&lt;option&gt;</code> children. Usually refers to code enums.</td><td><code>Normal</code>, <code>Advanced</code></td></tr>
+<tr><td><code>int-textbox</code></td><td>Integer value.</td><td><code>42</code>, <code>-1</code></td></tr>
+<tr><td><code>float-textbox</code></td><td>Decimal value.</td><td><code>1.5</code>, <code>-0.3</code></td></tr>
+<tr><td><code>range-int</code></td><td>Two integers separated by comma (inclusive low,high).</td><td><code>10,20</code></td></tr>
+<tr><td><code>range-float</code></td><td>Two floats separated by comma (inclusive low,high).</td><td><code>0.5,1.5</code></td></tr>
+<tr><td><code>point-textbox</code></td><td>2D integer point as comma-separated pair.</td><td><code>10,20</code></td></tr>
+<tr><td><code>vector2-textbox</code></td><td>2-component float vector.</td><td><code>1.0,0.5</code></td></tr>
+<tr><td><code>vector3-textbox</code></td><td>3-component float vector.</td><td><code>0,1,0</code></td></tr>
+<tr><td><code>vector4-textbox</code></td><td>4-component float vector (e.g. rotations, RGBA floats).</td><td><code>0,0,0,1</code></td></tr>
+<tr><td><code>color</code></td><td>Hex color. Shows an inline color swatch; clicking the swatch opens the OS color picker.</td><td><code>#808080</code></td></tr>
+<tr><td><code>node-dropdown</code></td><td>FK reference to another table (single). Click opens a filterable picker of valid IDs from the source table.</td><td>An ID from the source table</td></tr>
+<tr><td><code>node-list</code></td><td>FK reference list (comma-separated). Click opens a multi-select picker with checkboxes.</td><td><code>IdA,IdB,IdC</code></td></tr>
+<tr><td><code>lang-string</code></td><td>Language key reference. Behaves like a string in the editor, but validated against the <code>0_Language</code> table. Blank values are allowed. Ctrl+click navigates to the referenced language entry.</td><td>A key from the Language table</td></tr>
+<tr><td><code>path</code></td><td>Filesystem path (relative to the game's content root, typically). Opaque identifier for spellcheck purposes &mdash; never spellchecked.</td><td><code>Icons/Buildings/Factory.png</code></td></tr>
+<tr><td><code>folder-list</code></td><td>Comma-separated list of folder paths. Opaque like <code>path</code>.</td><td><code>Audio/UI,Audio/Ambient</code></td></tr>
+<tr><td><code>FQN</code></td><td>Fully-Qualified Name of a class in code. Can be written as a full path (e.g. <code>Namespace.Sub.ClassName</code>) or as an alias defined in the CodeAlias table. Opaque &mdash; never spellchecked.</td><td><code>Arcen.HotM.Actors.Building</code></td></tr>
+<tr><td><code>ClassName</code></td><td>Locally-scoped class name &mdash; a class that's only directly referenced by its immediate parent/child in this table's data. Not a full FQN; no alias resolution. Opaque &mdash; never spellchecked.</td><td><code>Building</code></td></tr>
+<tr><td><code>MethodName</code></td><td>Locally-scoped method name, same semantics as <code>ClassName</code>. Opaque.</td><td><code>OnBuild</code></td></tr>
+<tr><td><code>DllName</code></td><td>Locally-scoped DLL / assembly name, same semantics as <code>ClassName</code>. Opaque.</td><td><code>Arcen.HotM</code></td></tr>
+<tr><td><code>sub_id</code></td><td>An opaque sub-identifier (scoped within a parent's ID). Never spellchecked.</td><td><code>Phase_1</code></td></tr>
+<tr><td><code>existing-override</code></td><td>Override a SharedMetaData attribute. The child properties on the override merge onto the inherited attribute; <code>type</code> stays whatever the shared attribute declared.</td><td>(modifies inherited attr)</td></tr>
+</table>
+
+<h2>Attribute Properties</h2>
+<p>These properties are features of the general engine (the Arcen layer above Unity) that HotM and similar games use. Most are inherited across every project that uses the engine.</p>
+
+<h3>Core</h3>
+<table>
+<tr><th>Property</th><th>Description</th></tr>
+<tr><td><code>key</code></td><td>The attribute name as it appears in XML.</td></tr>
+<tr><td><code>type</code></td><td>One of the types listed above.</td></tr>
+<tr><td><code>default</code></td><td>Default value for new entries.</td></tr>
+<tr><td><code>tooltip</code></td><td>Description shown on hover in the editor.</td></tr>
+<tr><td><code>description</code></td><td>Alternative to tooltip. Same purpose; legacy / secondary name.</td></tr>
+</table>
+
+<h3>FK / Dropdown-Related</h3>
+<table>
+<tr><th>Property</th><th>Description</th></tr>
+<tr><td><code>node_source</code></td><td>For FK types: the target table name (e.g., <code>BuildingType</code>).</td></tr>
+<tr><td><code>node_sub_source</code></td><td>For compound FKs: format is <code>sub_node:id_field</code> (e.g., <code>goal_path:id</code>). Enables <code>Parent:Child</code> references.</td></tr>
+<tr><td><code>node_extra_allowed</code></td><td>Comma-separated extra valid values (e.g., <code>None,All</code>). Shown first in dropdowns.</td></tr>
+<tr><td><code>can_make_invalid_cross_links</code></td><td><code>"true"</code> on a <code>node-dropdown</code> or <code>node-list</code> field lifts the layer-visibility check for that field only. A base entity could reference a DLC- or mod-introduced row, a DLC could reference another DLC, etc. The picker also surfaces every layer's IDs. Use sparingly &mdash; only when the engine handles the missing-target case gracefully at runtime. Absent or any other value leaves the default rules in effect.</td></tr>
+</table>
+
+<p>Note: the literal values <code>None</code> and <code>∅</code> are universally accepted as "no value" on every FK-typed field, regardless of whether a row with that name exists in the target table. The engine treats both as null at runtime, so the validator does too.</p>
+
+<h3>Content-Classification Flags</h3>
+<p>These classify what kind of data the attribute holds. The editor uses them to decide whether to spellcheck, what dictionary to consult, and how to treat the value for ID-related purposes.</p>
+<table>
+<tr><th>Property</th><th>Description</th></tr>
+<tr><td><code>is_localized</code></td><td>Controls spellcheck. <code>"true"</code> = user-facing prose that will be translated (checked against the global dictionary only). <code>"false"</code> = dev-facing prose (checked against global + dev dictionaries). Absent = not prose; not spellchecked.</td></tr>
+<tr><td><code>is_user_facing_name</code></td><td>This attribute holds a display name shown to players (e.g. a building's label). Used for UI hints and search.</td></tr>
+<tr><td><code>is_description</code></td><td>This attribute holds a description &mdash; longer-form localized text, separate from a short display name.</td></tr>
+<tr><td><code>is_internal_notes</code></td><td>This attribute holds developer-facing internal notes (like the <code>internal_notes</code> attribute on the shared schema). Dimmed in the editor; spellchecked with the dev dictionary.</td></tr>
+<tr><td><code>is_translation_notes</code></td><td>Notes about how the accompanying localized string should be translated. Dev-facing; dimmed; dev-dictionary spellcheck.</td></tr>
+<tr><td><code>no_spellcheck_or_grammar</code></td><td>Explicit opt-out. The attribute (or if placed on a node, every attribute inside that node) is never spellchecked or grammar-checked. Useful for attributes whose values are opaque tokens that happen to be typed as <code>string</code>.</td></tr>
+</table>
+
+<h3>Identifier Flags</h3>
+<p>These mark the attribute as holding an identifier of some kind. All of them cause spellcheck to skip the value (IDs aren't prose). Multiple may apply to the same attribute.</p>
+<table>
+<tr><th>Property</th><th>Description</th></tr>
+<tr><td><code>is_central_identifier</code></td><td>This is the primary ID for a record in its table. Typically set on the shared <code>id</code> attribute.</td></tr>
+<tr><td><code>is_partial_identifier</code></td><td>This attribute contributes to the record's identity but isn't the whole ID on its own &mdash; useful for composite keys.</td></tr>
+<tr><td><code>is_id_for_layer</code></td><td>Identifier scoped to a "layer" concept in the engine (a sub-context under which sibling records are disambiguated).</td></tr>
+<tr><td><code>is_data_copy_identifier</code></td><td>This attribute references another record to copy data from (the shared <code>copy_from</code> attribute uses this). The value is an ID in the same table.</td></tr>
+</table>
+
+
+<h2>Sub-Nodes</h2>
+<p>Sub-nodes define child elements that can appear inside a table's entries:</p>
+<pre><code>&lt;sub_node id="variant"&gt;
+  &lt;attribute key="condition" type="string" tooltip="..."/&gt;
+  &lt;attribute key="amount" type="int-textbox" default="1"/&gt;
+&lt;/sub_node&gt;</code></pre>
+<p>Sub-nodes can be nested. Each sub-node has its own set of valid attributes. Validation is context-aware: an attribute valid in one sub-node is not valid in another.</p>
+
+<h2>String Dropdown Options</h2>
+<pre><code>&lt;attribute key="mode" type="string-dropdown"&gt;
+  &lt;option value="Normal"/&gt;
+  &lt;option value="Advanced"/&gt;
+&lt;/attribute&gt;</code></pre>`,
+
+'lookup-swaps': `<h1>LookupSwaps</h1>
+<p>The <code>LookupSwaps</code> table maps old IDs to new IDs. When game data entries are renamed, a swap entry preserves backward compatibility:</p>
+<pre><code>&lt;lookup_swap id="OldName" new_id="NewName" /&gt;</code></pre>
+
+<h2>How It's Used in the Editor</h2>
+<ul>
+<li><strong>Validation:</strong> When an FK reference fails (ID not found), the validator checks the LookupSwaps chain. If a valid replacement exists at the end of the chain, the error message includes "LookupSwaps indicates you might mean: NewName?"</li>
+<li><strong>Chained swaps:</strong> If <code>A &rarr; B</code> and <code>B &rarr; C</code>, looking up <code>A</code> resolves to <code>C</code> (up to 10 levels deep).</li>
+<li><strong>Quick fixes:</strong> Right-click a validation entry with a LookupSwaps suggestion to "Replace in this file" or "Replace all" across all files.</li>
+</ul>
+
+<h2>Location</h2>
+<p>The <code>LookupSwaps/</code> folder at the data root contains <code>LookupSwaps.xml</code> with all swap entries.</p>`,
+
+'auto-behaviors': `<h1>Auto Behaviors</h1>
+<h2>While Typing</h2>
+<ul>
+<li><strong>Auto-close tags:</strong> Typing <code>&gt;</code> after a tag name inserts the closing tag with proper indentation.</li>
+<li><strong>Auto-comment:</strong> Typing <code>&lt;!</code> outside of an unfinished tag (between elements or in text content) expands to <code>&lt;!----&gt;</code> with the cursor placed between the dashes, ready for you to type the comment body.</li>
+<li><strong>Auto-escape in quotes:</strong> Typing <code>"</code>, <code>&lt;</code>, or <code>&gt;</code> inside an attribute value auto-escapes to <code>&amp;quot;</code>, <code>&amp;lt;</code>, <code>&amp;gt;</code>.</li>
+<li><strong>Auto-add equals:</strong> Typing <code>=</code> inside a tag auto-adds <code>=""</code> with cursor between quotes.</li>
+<li><strong>Smart Enter:</strong> Inside quotes, Enter inserts a bare newline (no indent) since whitespace is meaningful content.</li>
+</ul>
+
+<h2>Autocomplete</h2>
+<p>Autocomplete is schema-aware and fires while you type. It never pops up inside quoted values or XML comments.</p>
+<ul>
+<li><strong>Node name completion</strong> &mdash; after typing <code>&lt;</code>, AXE suggests valid node names for the current file's schema (the table's top-level node name plus any sub-nodes, plus <code>root</code>). Substring match; sorted alphabetically.</li>
+<li><strong>Attribute name completion</strong> &mdash; after typing whitespace inside an open tag, AXE suggests valid attribute names for that node's context. The suggestion list is scoped to where you are: inside a <code>&lt;sub_node&gt;</code>, it offers that sub-node's attributes plus the shared/top-level attributes; on the root node, it offers the table-level attributes plus SharedMetaData attributes.</li>
+<li><strong>Smart inserts:</strong> Selecting an attribute inserts <code>name=""</code> with the cursor between the quotes. Bool attributes insert <code>="true"</code>; int-bool attributes insert <code>="1"</code>. FK attributes (node-dropdown / node-list) auto-open the picker after completion so you don't have to click.</li>
+</ul>
+
+<h2>File Watching</h2>
+<ul>
+<li>External changes to XML and metadata files are detected continuously by a filesystem watcher and again on window focus as a safety net.</li>
+<li>If a file has no unsaved edits, the editor silently reloads to the new disk content.</li>
+<li>If a file has unsaved edits and the disk version genuinely differs, a yellow "File changed on disk. Reload? (Unsaved changes will be lost.)" bar appears at the top of the editor with <strong>Reload</strong> and <strong>Dismiss</strong> buttons. Clicking Reload replaces the buffer with disk content; Dismiss keeps your edits and hides the bar.</li>
+<li>Saves from AXE itself are suppressed for a few seconds after each write, so you never see the reload bar as an echo of your own save.</li>
+<li>When the file's disk content is identical to what AXE last saved, the change event is treated as a no-op (common when an external tool rewrites the file with the same bytes, e.g. a Git checkout of the same commit).</li>
+<li>Metadata file changes trigger automatic schema re-parsing. A partial / mid-write file is detected and retried up to 30 seconds so validation isn't poisoned by catching an external tool between truncate-and-write.</li>
+<li>Files added, removed, or renamed externally show up in the sidebar within a fraction of a second.</li>
+</ul>
+
+<h2>Dimmed Attributes</h2>
+<p>The attributes <code>internal_notes</code>, <code>translation_notes</code>, and <code>optional_requirement_text_translation_notes</code> are displayed in a dimmed gray color, as they contain developer-facing notes rather than game data.</p>
+
+<h2>Color Swatches</h2>
+<p>Any attribute value matching <code>#RRGGBB</code> (or bare 6-digit hex on <code>icon_color</code>) shows a color swatch overlay. Clicking opens the native color picker.</p>`,
+
+'diff-view': `<h1>Changes Since Save</h1>
+<p>View unsaved changes by clicking an already-active modified tab, or via the tab's right-click context menu.</p>
+
+<h2>Display</h2>
+<ul>
+<li><strong>Green lines:</strong> Added content.</li>
+<li><strong>Red lines:</strong> Deleted content.</li>
+<li><strong>Bold text within lines:</strong> The specific characters that changed (inline diff highlighting).</li>
+<li><strong>Context:</strong> Shows 10 lines above and below each change. Gaps show "N unchanged lines" separators.</li>
+</ul>
+
+<h2>Actions</h2>
+<ul>
+<li><strong>Revert All:</strong> Red button in the header. Reverts the file to its last-saved state.</li>
+<li><strong>Close:</strong> Press <kbd>Escape</kbd> or click the &times; button.</li>
+</ul>
+
+<h2>Gutter Markers</h2>
+<p>A narrow gutter to the left of line numbers shows TWO layers of change indication, stacked in the same column:</p>
+<ul>
+<li><strong>Yellow bar</strong> (front): lines differing from the file's last-saved version &mdash; in-memory unsaved edits. Disappears on save.</li>
+<li><strong>Orange bar</strong> (behind): lines differing from the VCS base revision (HEAD for Git, BASE for SVN) &mdash; changes that are on disk but not yet committed. Requires a connected source-control provider; hidden for untracked files or when no provider is active.</li>
+</ul>
+<p>When a line has both unsaved edits AND an uncommitted change, yellow is drawn in front and orange peeks out behind as a narrow fringe, so you can still see that the line is both dirty-in-editor and dirty-in-repo. After saving, the yellow drops away and you're left with just the orange until you commit.</p>
+<p>Both diffs are computed asynchronously (debounced 300 ms after typing stops) to avoid impacting typing performance. The orange layer additionally re-fetches the VCS base content whenever a source-control status change is broadcast (commit, revert, pull, etc.).</p>`,
+
+'reference-panel': `<h1>Reference Panel</h1>
+<p>The Reference Panel lets you view two parts of the same file simultaneously. It appears above the main editor as a read-only view.</p>
+
+<h2>Opening</h2>
+<ul>
+<li><strong>Ctrl+click a tag name</strong> (e.g., <code>&lt;building_type</code>) in any XML or schema file to open the Reference Panel scrolled to that node.</li>
+<li>If the panel is already open, Ctrl+clicking another tag scrolls it to the new location without resetting the height.</li>
+</ul>
+
+<h2>Features</h2>
+<ul>
+<li><strong>Read-only:</strong> You can select and copy text, but cannot edit. No bool toggles, no FK dropdowns, no typing.</li>
+<li><strong>Syntax highlighting:</strong> Full color markup matching the main editor, including header attributes, FK coloring, dimmed notes, and color swatches.</li>
+<li><strong>Independent scrolling:</strong> Scroll the reference panel independently from the main editor.</li>
+<li><strong>Search highlighting:</strong> When the local file search (Ctrl+F) is active, matches are highlighted in both the main editor and the reference panel.</li>
+<li><strong>Own text scale:</strong> A separate scale indicator (bottom-left) controls the reference panel's zoom level independently from the main editor. This scale is shared across all reference panels and persisted.</li>
+</ul>
+
+<h2>Resizing</h2>
+<p>Drag the border between the reference panel and the main editor to resize. The panel opens at 40% of the editor height by default.</p>
+
+<h2>Closing</h2>
+<p>Click the <strong>X button</strong> in the top-right corner of the reference panel.</p>
+
+<h2>Per-Tab State</h2>
+<p>Each tab has its own reference panel state. Opening the panel in one tab does not affect other tabs. Switching tabs preserves the panel's open/closed state, height, and scroll position. This state is persisted across app restarts.</p>`,
+    };
+
+    const sidebar = document.getElementById('sidebar');
+    const contentEl = document.getElementById('content');
+    let activeId = topics[0].id;
+
+    function render() {
+      sidebar.innerHTML = topics.map(t =>
+        '<div class="topic' + (t.id === activeId ? ' active' : '') + '" onclick="selectTopic(\'' + t.id + '\')">' + t.title + '</div>'
+      ).join('');
+      contentEl.innerHTML = content[activeId] || '<p>No content available.</p>';
+    }
+
+    window.selectTopic = function(id) {
+      activeId = id;
+      render();
+      contentEl.scrollTop = 0;
+    };
+
+    render();
+  </script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+{
+  "name": "arcen-xml-editor",
+  "version": "1.0.0",
+  "description": "Portable XML editor for Heart of the Machine game data",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node build.js && electron .",
+    "dev": "node build.js && cross-env NODE_ENV=development electron .",
+    "build:win": "electron-builder --win portable",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux AppImage",
+    "build": "electron-builder --win --mac --linux",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.arcen.xmleditor",
+    "productName": "ArcenXmlEd",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "icons/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "!**/*.md",
+      "!**/*.markdown",
+      "!**/*.map",
+      "!**/*.ts",
+      "!**/*.d.ts",
+      "!**/{test,tests,__tests__,spec,example,examples,docs,doc}/**",
+      "!**/{LICENSE,LICENCE,license,COPYING,AUTHORS,CHANGELOG,HISTORY,NOTICE}*",
+      "!**/.github/**",
+      "!**/.vscode/**",
+      "!**/*.{yml,yaml}",
+      "!**/{.eslintrc,.prettierrc,.editorconfig,.babelrc,tsconfig.json,rollup.config.js}*"
+    ],
+    "extraResources": [],
+    "win": {
+      "target": "dir",
+      "icon": "icons/icon.png"
+    },
+    "mac": {
+      "target": "tar.gz",
+      "icon": "icons/icon.png",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "icons/icon.png",
+      "executableName": "ArcenXmlEd"
+    },
+    "portable": {
+      "artifactName": "ArcenXmlEd.exe"
+    }
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.0",
+    "@electron/rebuild": "^3.7.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.18.0",
+    "@codemirror/commands": "^6.7.0",
+    "@codemirror/lang-xml": "^6.1.0",
+    "@codemirror/language": "^6.10.3",
+    "@codemirror/search": "^6.5.7",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.34.0",
+    "@lezer/highlight": "^1.2.1",
+    "chokidar": "^4.0.0",
+    "dictionary-en": "^4.0.0",
+    "esbuild": "^0.24.0",
+    "linkedom": "^0.18.12",
+    "nspell": "^2.1.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

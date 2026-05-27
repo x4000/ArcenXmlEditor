@@ -1,0 +1,9 @@
+npm install
+node build.js
+npm start
+
+For distributable builds: 
+npm run build:win
+npm run build:mac
+npm run build:linux
+those use electron-builder to produce the portable .exe / .app / AppImage

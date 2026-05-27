@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Arcen XML Validator</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --sidebar-bg: #f7f9fe;
+      --tab-bg: #3e3b81;
+      --tab-bar-bg: #635d99;
+      --border: #d4d4d4;
+      --text: #000000;
+      --text-dim: #6e6e6e;
+      --search-bg: #ceccf0;
+      --results-bg: #e3e2f5;
+      --results-header: #d8d7ef;
+      --accent: #007acc;
+      --status-ok: #7c38c5;
+      --status-error: #c5384c;
+      --status-warn: #c56338;
+      --scrollbar-track: #e8e6f0;
+      --scrollbar-thumb: #8b84b8;
+    }
+    [data-theme="dark"] {
+      --bg: #1e1e1e;
+      --sidebar-bg: #252526;
+      --tab-bg: #2d2d2d;
+      --tab-bar-bg: #2d2d2d;
+      --border: #3c3c3c;
+      --text: #d4d4d4;
+      --text-dim: #888888;
+      --search-bg: #2d2d2d;
+      --results-bg: #2d2d2d;
+      --results-header: #333333;
+      --accent: #007acc;
+      --status-ok: #007acc;
+      --status-error: #c5384c;
+      --status-warn: #c56338;
+      --scrollbar-track: #2a2a2e;
+      --scrollbar-thumb: #555;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      border: 4px solid var(--tab-bar-bg);
+      border-top: none;
+    }
+
+    .title-bar {
+      display: flex; align-items: center; height: 30px;
+      background: var(--tab-bar-bg); color: #fff; font-size: 12px;
+      -webkit-app-region: drag; user-select: none; padding-left: 10px; flex-shrink: 0;
+    }
+    .title-bar .title-text { flex: 1; font-weight: 500; }
+    .title-bar .window-controls { display: flex; -webkit-app-region: no-drag; height: 100%; }
+    .title-bar .window-controls button {
+      background: transparent; border: none; color: #fff; width: 46px; height: 100%;
+      font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .title-bar .window-controls button:hover { background: rgba(255,255,255,0.15); }
+    .title-bar .window-controls button.close-window:hover { background: #e81123; }
+
+    .toolbar {
+      padding: 8px 12px; background: var(--search-bg);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;
+    }
+    .toolbar button {
+      padding: 3px 10px; border: 1px solid rgba(0,0,0,0.2); border-radius: 3px;
+      background: var(--tab-bg); color: #fff; cursor: pointer; font-size: 11px;
+    }
+    .toolbar button:hover { opacity: 0.85; }
+    .toolbar .filter-btn {
+      background: var(--results-bg); color: var(--text-dim); font-weight: 700; font-size: 11px;
+      padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border); cursor: pointer;
+    }
+    .toolbar .filter-btn:hover { background: var(--results-header); }
+    .toolbar .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .toolbar .summary { font-size: 11px; color: var(--text-dim); }
+
+    .results { flex: 1; overflow-y: auto; background: var(--results-bg); position: relative; }
+    .vlist-spacer { position: relative; width: 100%; }
+    .vlist-row {
+      position: absolute; left: 0; right: 0;
+      display: flex; align-items: center; box-sizing: border-box;
+    }
+    .file-header {
+      font-weight: 700; padding: 4px 12px; font-size: 11px;
+      background: var(--results-header); color: var(--text);
+      height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .entry {
+      padding: 3px 12px 3px 24px; cursor: pointer; gap: 8px;
+      font-size: 12px; color: var(--text); height: 22px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .entry:hover { background: rgba(0,0,0,0.06); }
+    .severity-error { color: #d32f2f; font-weight: 600; }
+    .severity-warning { color: #e68a00; font-weight: 600; }
+    .line-num { color: var(--text-dim); min-width: 40px; font-size: 11px; }
+    .empty { padding: 24px; text-align: center; color: var(--text-dim); }
+
+    *::-webkit-scrollbar { width: 10px; height: 10px; }
+    *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+    *::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 5px; }
+    *::-webkit-scrollbar-thumb:hover { opacity: 0.8; }
+
+    .context-menu {
+      position: fixed; z-index: 100; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); min-width: 200px; padding: 4px 0;
+    }
+    .context-menu-item {
+      padding: 6px 14px; font-size: 12px; cursor: pointer; color: var(--text);
+    }
+    .context-menu-item:hover { background: var(--tab-bg); color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="title-bar">
+    <span class="title-text">Arcen XML Validator</span>
+    <div class="window-controls">
+      <button onclick="window.close()" class="close-window" title="Close">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <button id="revalidate">Re-validate All</button>
+    <button id="spelling-check">Spelling Check</button>
+    <button id="grammar-check">Grammar Check</button>
+    <button id="grammar-settings" title="Configure the grammar checker (Anthropic API key, model)">⚙</button>
+    <span class="filter-btn" id="filter-all">All</span>
+    <span class="filter-btn" id="filter-errors">Errors</span>
+    <span class="filter-btn" id="filter-warnings">Warnings</span>
+    <span class="filter-btn" id="filter-spelling">Spelling</span>
+    <span class="filter-btn" id="filter-grammar">Grammar</span>
+    <span class="summary" id="summary"></span>
+  </div>
+  <div class="results" id="results">
+    <div class="empty">No validation results yet.</div>
+  </div>
+  <script>
+    let allResults = [];
+    let currentFilter = 'all'; // 'all', 'error', 'warning'
+
+    // Theme detection — listen for theme changes and request current theme on load
+    window.arcenApi?.onThemeChange?.((theme) => {
+      document.documentElement.setAttribute('data-theme', theme);
+    });
+
+    // Request current results and theme on load
+    (async function() {
+      try {
+        const results = await window.arcenApi?.getValidationResults?.();
+        if (results?.length) {
+          allResults = results;
+          renderResults();
+        }
+      } catch (_) {}
+    })();
+
+    function setFilter(f) {
+      currentFilter = f;
+      document.getElementById('filter-all').className = 'filter-btn' + (f === 'all' ? ' active' : '');
+      document.getElementById('filter-errors').className = 'filter-btn' + (f === 'error' ? ' active' : '');
+      document.getElementById('filter-warnings').className = 'filter-btn' + (f === 'warning' ? ' active' : '');
+      document.getElementById('filter-spelling').className = 'filter-btn' + (f === 'spelling' ? ' active' : '');
+      document.getElementById('filter-grammar').className = 'filter-btn' + (f === 'grammar' ? ' active' : '');
+      renderResults();
+    }
+
+    document.getElementById('filter-all')?.addEventListener('click', () => setFilter('all'));
+    document.getElementById('filter-errors')?.addEventListener('click', () => setFilter('error'));
+    document.getElementById('filter-warnings')?.addEventListener('click', () => setFilter('warning'));
+    document.getElementById('filter-spelling')?.addEventListener('click', () => setFilter('spelling'));
+    document.getElementById('filter-grammar')?.addEventListener('click', () => setFilter('grammar'));
+
+    function filterResults(results, filter) {
+      if (filter === 'all') return results;
+      if (filter === 'spelling') return results.filter(r => r.message.startsWith('Spelling:'));
+      if (filter === 'grammar') return results.filter(r => r.message.startsWith('Grammar ('));
+      if (filter === 'warning') return results.filter(r => r.severity === 'warning' && !r.message.startsWith('Spelling:') && !r.message.startsWith('Grammar ('));
+      return results.filter(r => r.severity === filter);
+    }
+
+    // ── Virtualized list state ─────────────────────────────────────
+    // Each "row" is { kind: 'header'|'entry', ... , y: offsetPx, h: heightPx, globalIdx? }
+    var rowList = [];
+    var totalHeight = 0;
+    var ROW_HEIGHT_HEADER = 24;
+    var ROW_HEIGHT_ENTRY = 22;
+    var elementPool = []; // reused DOM nodes
+    var scrollListenerAttached = false;
+
+    function parseSuggestion(msg) {
+      var m = msg.match(/(?:Did you mean|LookupSwaps indicates you might mean): ([^?]+)\?/);
+      if (!m) return null;
+      return m[1].split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Trim the suite-mode base-layer prefix from a file path for display.
+    // Base-game files become bare <folder>/<file>; expansion (Expansions/...)
+    // paths are left intact since the location identifies the layer. No-op
+    // in narrow mode. Mirrors displayRelPath() in layerDisplay.js.
+    function displayPath(p) {
+      var PFX = 'GameData/Configuration/';
+      return (typeof p === 'string' && p.indexOf(PFX) === 0) ? p.slice(PFX.length) : p;
+    }
+
+    function renderResults() {
+      var container = document.getElementById('results');
+      var summary = document.getElementById('summary');
+      var filtered = filterResults(allResults, currentFilter);
+
+      var errors = allResults.filter(function(r) { return r.severity === 'error'; }).length;
+      var warnings = allResults.filter(function(r) { return r.severity === 'warning' && !r.message.startsWith('Spelling:') && !r.message.startsWith('Grammar ('); }).length;
+      var spelling = allResults.filter(function(r) { return r.message.startsWith('Spelling:'); }).length;
+      var grammar = allResults.filter(function(r) { return r.message.startsWith('Grammar ('); }).length;
+      var parts = [];
+      if (errors > 0) parts.push(errors + ' error' + (errors !== 1 ? 's' : ''));
+      if (warnings > 0) parts.push(warnings + ' warning' + (warnings !== 1 ? 's' : ''));
+      if (spelling > 0) parts.push(spelling + ' misspelling' + (spelling !== 1 ? 's' : ''));
+      if (grammar > 0) parts.push(grammar + ' grammar');
+      summary.textContent = parts.join(' \u00b7 ') || 'No issues';
+      var total = errors + warnings + spelling + grammar;
+      document.title = 'Arcen XML Validator' + (total > 0 ? ' (' + errors + 'E ' + warnings + 'W' + (spelling > 0 ? ' ' + spelling + 'S' : '') + (grammar > 0 ? ' ' + grammar + 'G' : '') + ')' : '');
+
+      // Store items for context menu access
+      window._validationItems = filtered;
+
+      if (!filtered.length) {
+        container.innerHTML = '<div class="empty">' + (allResults.length ? 'No matching results for this filter.' : '\u2713 No issues found') + '</div>';
+        rowList = [];
+        totalHeight = 0;
+        elementPool = [];
+        return;
+      }
+
+      // Group by file, then flatten into row list
+      var grouped = {};
+      var fileOrder = [];
+      for (var i = 0; i < filtered.length; i++) {
+        var r = filtered[i];
+        if (!grouped[r.file]) {
+          grouped[r.file] = [];
+          fileOrder.push(r.file);
+        }
+        grouped[r.file].push({ item: r, globalIdx: i });
+      }
+
+      rowList = [];
+      var y = 0;
+      for (var f = 0; f < fileOrder.length; f++) {
+        var file = fileOrder[f];
+        var items = grouped[file];
+        rowList.push({ kind: 'header', file: file, count: items.length, y: y, h: ROW_HEIGHT_HEADER });
+        y += ROW_HEIGHT_HEADER;
+        for (var k = 0; k < items.length; k++) {
+          rowList.push({ kind: 'entry', item: items[k].item, globalIdx: items[k].globalIdx, y: y, h: ROW_HEIGHT_ENTRY });
+          y += ROW_HEIGHT_ENTRY;
+        }
+      }
+      totalHeight = y;
+
+      // Build DOM structure: one spacer + pool of row elements
+      container.innerHTML = '';
+      var spacer = document.createElement('div');
+      spacer.className = 'vlist-spacer';
+      spacer.style.height = totalHeight + 'px';
+      container.appendChild(spacer);
+      elementPool = [];
+
+      // Attach scroll listener (once)
+      if (!scrollListenerAttached) {
+        container.addEventListener('scroll', function() { renderVisible(); });
+        window.addEventListener('resize', function() { renderVisible(); });
+        scrollListenerAttached = true;
+      }
+
+      renderVisible();
+    }
+
+    function renderVisible() {
+      var container = document.getElementById('results');
+      var spacer = container.querySelector('.vlist-spacer');
+      if (!spacer || rowList.length === 0) return;
+
+      var scrollTop = container.scrollTop;
+      var viewportH = container.clientHeight;
+      var OVERSCAN = 200; // px of extra rendering above/below viewport
+
+      var viewTop = Math.max(0, scrollTop - OVERSCAN);
+      var viewBottom = scrollTop + viewportH + OVERSCAN;
+
+      // Binary search for first visible row
+      var lo = 0, hi = rowList.length - 1, startIdx = 0;
+      while (lo <= hi) {
+        var mid = (lo + hi) >> 1;
+        if (rowList[mid].y + rowList[mid].h < viewTop) {
+          lo = mid + 1;
+          startIdx = lo;
+        } else {
+          hi = mid - 1;
+        }
+      }
+
+      // Walk forward while rows are in view
+      var visibleRows = [];
+      for (var i = startIdx; i < rowList.length; i++) {
+        var row = rowList[i];
+        if (row.y > viewBottom) break;
+        visibleRows.push(row);
+      }
+
+      // Reuse element pool: grow if needed
+      while (elementPool.length < visibleRows.length) {
+        var el = document.createElement('div');
+        el.className = 'vlist-row';
+        spacer.appendChild(el);
+        elementPool.push(el);
+      }
+
+      // Render visible rows into pool
+      for (var j = 0; j < visibleRows.length; j++) {
+        var row = visibleRows[j];
+        var el = elementPool[j];
+        el.style.top = row.y + 'px';
+        el.style.height = row.h + 'px';
+        el.style.display = 'flex';
+        if (row.kind === 'header') {
+          el.className = 'vlist-row file-header';
+          el.textContent = displayPath(row.file) + ' (' + row.count + ')';
+          el.title = row.file;
+          el.onclick = null;
+          el.oncontextmenu = null;
+        } else {
+          var item = row.item;
+          var suggestions = parseSuggestion(item.message);
+          var isSpelling = item.message.startsWith('Spelling:');
+          var isGrammar = item.message.startsWith('Grammar (');
+          var hasContextMenu = suggestions || isSpelling || isGrammar;
+          var hlMatch = item.message.match(/"([^"]+)"/);
+          var hlText = hlMatch ? hlMatch[1] : '';
+
+          el.className = 'vlist-row entry';
+          // Use innerHTML for the icon+line+message structure
+          el.innerHTML =
+            '<span class="severity-' + item.severity + '">' + (item.severity === 'error' ? '\u2715' : '\u26A0') + '</span>' +
+            '<span class="line-num">:' + item.line + '</span>' +
+            '<span>' + escapeHtml(item.message) + '</span>';
+          // Native tooltip: shows full text on hover. Useful when a row's
+          // message is wider than the panel (long sentence with snippet) or
+          // when Harper truncates the visible suggestion. Browsers wrap the
+          // tooltip on long strings automatically.
+          el.title = item.message;
+
+          (function(capturedItem, capturedHl, capturedIdx, capturedHasMenu) {
+            el.onclick = function() {
+              // Structural (layout) errors — an orphan expansion folder or a
+              // stray .metadata in an expansion — have no file:line to jump
+              // to. Open the offending folder in Explorer instead.
+              if (capturedItem.folderPath && (capturedItem.kind === 'orphan-folder' || capturedItem.kind === 'metadata-in-expansion')) {
+                window.arcenApi?.showInFolder(capturedItem.folderPath);
+                return;
+              }
+              // Pass absPos if present so navigation can highlight the EXACT occurrence
+              // rather than the first match on the line (e.g. for words that appear in
+              // both id= and display_name= on the same node).
+              window.arcenApi?.navigateToLine(capturedItem.file, capturedItem.line, capturedHl, capturedItem.absPos);
+            };
+            el.oncontextmenu = capturedHasMenu ? function(e) {
+              showSuggestionMenu(e, capturedIdx);
+            } : null;
+          })(item, hlText, row.globalIdx, hasContextMenu);
+        }
+      }
+
+      // Hide unused pool elements
+      for (var k = visibleRows.length; k < elementPool.length; k++) {
+        elementPool[k].style.display = 'none';
+      }
+    }
+
+    window.arcenApi?.onValidationResults?.((results) => {
+      allResults = results || [];
+      // Stop timers FIRST so the button updates immediately (before the chunked render starts)
+      if (window._spellingTimerCleanup) window._spellingTimerCleanup();
+      if (window._grammarTimerCleanup) window._grammarTimerCleanup();
+      if (window._revalidateTimerCleanup) window._revalidateTimerCleanup();
+      renderResults();
+    });
+
+    document.getElementById('revalidate')?.addEventListener('click', () => {
+      // Show a count-up timer while validation is in flight, matching the
+      // Grammar/Spelling buttons. The renderer side guarantees a results
+      // ship even when nothing changed (forceSendValidatorRef in App.jsx),
+      // so this cleanup always fires — clicking with no real changes used
+      // to leave the user wondering whether the click did anything.
+      var btn = document.getElementById('revalidate');
+      var startTime = Date.now();
+      btn.textContent = 'Re-validating... 0.0s';
+      btn.disabled = true;
+      var timerInterval = setInterval(function() {
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Re-validating... ' + elapsed + 's';
+      }, 100);
+      var origCleanup = window._revalidateTimerCleanup;
+      if (origCleanup) origCleanup();
+      window._revalidateTimerCleanup = function() {
+        clearInterval(timerInterval);
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Re-validate All (' + elapsed + 's)';
+        btn.disabled = false;
+        window._revalidateTimerCleanup = null;
+      };
+      window.arcenApi?.requestRevalidate?.();
+    });
+
+    document.getElementById('grammar-check')?.addEventListener('click', () => {
+      var btn = document.getElementById('grammar-check');
+      var startTime = Date.now();
+      btn.textContent = 'Grammar... 0.0s';
+      btn.disabled = true;
+      var timerInterval = setInterval(function() {
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Grammar... ' + elapsed + 's';
+      }, 100);
+      var origHandler = window._grammarTimerCleanup;
+      if (origHandler) origHandler();
+      window._grammarTimerCleanup = function() {
+        clearInterval(timerInterval);
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Grammar Check (' + elapsed + 's)';
+        btn.disabled = false;
+        window._grammarTimerCleanup = null;
+      };
+      window.arcenApi?.requestGrammarCheck?.();
+    });
+
+    document.getElementById('grammar-settings')?.addEventListener('click', () => {
+      window.arcenApi?.requestGrammarSettings?.();
+    });
+
+    document.getElementById('spelling-check')?.addEventListener('click', () => {
+      var btn = document.getElementById('spelling-check');
+      var startTime = Date.now();
+      btn.textContent = 'Checking... 0.0s';
+      btn.disabled = true;
+      var timerInterval = setInterval(function() {
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Checking... ' + elapsed + 's';
+      }, 100);
+      var origCleanup = window._spellingTimerCleanup;
+      if (origCleanup) origCleanup();
+      window._spellingTimerCleanup = function() {
+        clearInterval(timerInterval);
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        btn.textContent = 'Spelling Check (' + elapsed + 's)';
+        btn.disabled = false;
+        window._spellingTimerCleanup = null;
+      };
+      window.arcenApi?.requestSpellingCheck?.();
+    });
+
+    // Context menu for suggestion-based fixes
+    let activeContextMenu = null;
+
+    function showSuggestionMenu(event, itemIdx) {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissContextMenu();
+
+      const item = window._validationItems[itemIdx];
+      if (!item) return;
+
+      // Handle spelling and grammar entries first (they have their own menu logic)
+      var isSpelling = item.message.startsWith('Spelling:');
+      var isGrammar = item.message.startsWith('Grammar (');
+      if (isSpelling || isGrammar) {
+        showSpellingGrammarMenu(event, item);
+        return;
+      }
+
+      // Parse suggestions from either format:
+      // "Did you mean: X, Y?" or "LookupSwaps indicates you might mean: X?"
+      const sugMatch = item.message.match(/(?:Did you mean|LookupSwaps indicates you might mean): ([^?]+)\?/);
+      if (!sugMatch) return;
+      const suggestions = sugMatch[1].split(',').map(s => s.trim()).filter(Boolean);
+
+      // Determine what the bad value is and how to replace it:
+      // Case 1: node_source errors — 'node_source "BadValue"'
+      // Case 2: FK reference errors — '"BadValue" not found in TableName'
+      var badValue = null;
+      var replaceOld = null;
+      var replaceNewFn = null;
+
+      var nodeSourceMatch = item.message.match(/node_source "([^"]+)"/);
+      var fkRefMatch = item.message.match(/Invalid reference(?:\s+in list)?: "([^"]+)" not found/);
+
+      if (nodeSourceMatch) {
+        badValue = nodeSourceMatch[1];
+        replaceOld = 'node_source="' + badValue + '"';
+        replaceNewFn = function(sug) { return 'node_source="' + sug + '"'; };
+      } else if (fkRefMatch) {
+        badValue = fkRefMatch[1];
+        // For FK references, replace the value directly (it appears as ="BadValue" in attributes)
+        replaceOld = '"' + badValue + '"';
+        replaceNewFn = function(sug) { return '"' + sug + '"'; };
+      }
+
+      const menu = document.createElement('div');
+      menu.className = 'context-menu';
+      menu.style.top = event.clientY + 'px';
+      menu.style.left = event.clientX + 'px';
+
+      // ── Spelling entry context menu ──
+      var isSpelling = item.message.startsWith('Spelling:');
+      if (isSpelling) {
+        var wordMatch = item.message.match(/Spelling: "([^"]+)"/);
+        var misspelledWord = wordMatch ? wordMatch[1] : null;
+
+        // Spelling suggestions
+        var spellSugs = [];
+        var spellSugMatch = item.message.match(/Did you mean: ([^?]+)\?/);
+        if (spellSugMatch) {
+          spellSugs = spellSugMatch[1].split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+        }
+
+        spellSugs.forEach(function(sug) {
+          var sugItem = document.createElement('div');
+          sugItem.className = 'context-menu-item';
+          sugItem.textContent = 'Replace with "' + sug + '"';
+          sugItem.addEventListener('click', function() {
+            if (misspelledWord) {
+              window.arcenApi?.requestReplace(item.file, '"' + misspelledWord + '"', '"' + sug + '"');
+            }
+            dismissContextMenu();
+          });
+          menu.appendChild(sugItem);
+        });
+
+        if (misspelledWord) {
+          if (spellSugs.length) {
+            var sep = document.createElement('div');
+            sep.style.cssText = 'border-top: 1px solid var(--border); margin: 4px 0';
+            menu.appendChild(sep);
+          }
+          var addDict = document.createElement('div');
+          addDict.className = 'context-menu-item';
+          addDict.textContent = 'Add "' + misspelledWord + '" to Dictionary';
+          addDict.addEventListener('click', function() {
+            window.arcenApi?.addToDictionary(misspelledWord);
+            // Remove all spelling entries for this word
+            allResults = allResults.filter(function(r) {
+              return !(r.message.startsWith('Spelling: "' + misspelledWord + '"'));
+            });
+            renderResults();
+            dismissContextMenu();
+          });
+          menu.appendChild(addDict);
+        }
+
+        document.body.appendChild(menu);
+        activeContextMenu = menu;
+        var rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - rect.width - 4) + 'px';
+        if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
+        return;
+      }
+
+      // ── FK/node_source suggestion context menu (original) ──
+      if (!badValue || !replaceOld) return;
+
+      suggestions.forEach(function(sug) {
+        var replaceOne = document.createElement('div');
+        replaceOne.className = 'context-menu-item';
+        replaceOne.textContent = 'Replace with "' + sug + '" in this file';
+        replaceOne.addEventListener('click', function() {
+          window.arcenApi?.requestReplace(item.file, replaceOld, replaceNewFn(sug));
+          allResults = allResults.filter(function(r) {
+            return !(r.file === item.file && r.message.indexOf('"' + badValue + '"') >= 0);
+          });
+          renderResults();
+          dismissContextMenu();
+        });
+        menu.appendChild(replaceOne);
+
+        var replaceAll = document.createElement('div');
+        replaceAll.className = 'context-menu-item';
+        replaceAll.textContent = 'Replace all "' + badValue + '" with "' + sug + '"';
+        replaceAll.addEventListener('click', function() {
+          window.arcenApi?.requestReplaceAll(replaceOld, replaceNewFn(sug));
+          allResults = allResults.filter(function(r) {
+            return r.message.indexOf('"' + badValue + '"') < 0;
+          });
+          renderResults();
+          dismissContextMenu();
+        });
+        menu.appendChild(replaceAll);
+      });
+
+      document.body.appendChild(menu);
+      activeContextMenu = menu;
+
+      // Keep menu in viewport
+      var rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - rect.width - 4) + 'px';
+      if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
+    }
+
+    function showSpellingGrammarMenu(event, item) {
+      var menu = document.createElement('div');
+      menu.className = 'context-menu';
+      menu.style.top = event.clientY + 'px';
+      menu.style.left = event.clientX + 'px';
+
+      if (item.message.startsWith('Spelling:')) {
+        var wordMatch = item.message.match(/Spelling: "([^"]+)"/);
+        var misspelledWord = wordMatch ? wordMatch[1] : null;
+        var isMixedScript = item.message.indexOf('(mixed script') >= 0;
+        var isForbiddenChar = !!item.forbiddenChar;
+
+        // Forbidden-char entries (smart quotes, em-dashes, ellipsis, etc.) are
+        // a separate kind of spelling error: the suggestion is the ASCII
+        // replacement, NOT a dictionary fix. Offer single-file and project-wide
+        // replace; skip "Add to Dictionary" (a non-letter character has no
+        // useful dictionary semantics).
+        //
+        // The fix is read off item.suggestions[0] directly — the live rescan
+        // path used to skip the "Did you mean: X?" suffix from the message,
+        // and the regex-on-message lookup we used to use returned null and
+        // produced an empty context menu.
+        if (isForbiddenChar && misspelledWord) {
+          var fix = (Array.isArray(item.suggestions) && item.suggestions.length > 0)
+            ? item.suggestions[0]
+            : null;
+          if (fix) {
+            var replaceOne = document.createElement('div');
+            replaceOne.className = 'context-menu-item';
+            replaceOne.textContent = 'Replace with "' + fix + '" in this file';
+            replaceOne.addEventListener('click', function() {
+              window.arcenApi?.requestReplace(item.file, misspelledWord, fix);
+              allResults = allResults.filter(function(r) {
+                return !(r.file === item.file && r.forbiddenChar && r.message.indexOf('"' + misspelledWord + '"') >= 0);
+              });
+              renderResults();
+              dismissContextMenu();
+            });
+            menu.appendChild(replaceOne);
+
+            var replaceAll = document.createElement('div');
+            replaceAll.className = 'context-menu-item';
+            replaceAll.textContent = 'Replace all "' + misspelledWord + '" with "' + fix + '" across all files';
+            replaceAll.addEventListener('click', function() {
+              window.arcenApi?.requestReplaceAll(misspelledWord, fix);
+              allResults = allResults.filter(function(r) {
+                return !(r.forbiddenChar && r.message.indexOf('"' + misspelledWord + '"') >= 0);
+              });
+              renderResults();
+              dismissContextMenu();
+            });
+            menu.appendChild(replaceAll);
+          }
+
+          document.body.appendChild(menu);
+          activeContextMenu = menu;
+          var fcRect = menu.getBoundingClientRect();
+          if (fcRect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - fcRect.width - 4) + 'px';
+          if (fcRect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - fcRect.height - 4) + 'px';
+          return;
+        }
+
+        // ── Dictionary-management actions come FIRST ──
+        if (misspelledWord) {
+          var addDict = document.createElement('div');
+          addDict.className = 'context-menu-item';
+          addDict.textContent = 'Add "' + misspelledWord + '" to Dictionary (global)';
+          addDict.addEventListener('click', function() {
+            window.arcenApi?.addToDictionary(misspelledWord);
+            allResults = allResults.filter(function(r) {
+              return !(r.message.startsWith('Spelling: "' + misspelledWord + '"'));
+            });
+            renderResults();
+            dismissContextMenu();
+          });
+          menu.appendChild(addDict);
+
+          // Dev-facing entry: also offer the dev-only dictionary
+          if (item.isDev) {
+            var addDevDict = document.createElement('div');
+            addDevDict.className = 'context-menu-item';
+            addDevDict.textContent = 'Add "' + misspelledWord + '" to Dev Dictionary (dev fields only)';
+            addDevDict.addEventListener('click', function() {
+              window.arcenApi?.addToDevDictionary(misspelledWord);
+              allResults = allResults.filter(function(r) {
+                return !(r.message.startsWith('Spelling: "' + misspelledWord + '"') && r.isDev);
+              });
+              renderResults();
+              dismissContextMenu();
+            });
+            menu.appendChild(addDevDict);
+          }
+
+          // "Ignore All Spelling in Entire Node" — adds no_spellcheck_or_grammar="true"
+          // to the enclosing XML element.
+          if (item.file && typeof item.absPos === 'number' && window.arcenApi?.requestIgnoreNode) {
+            var ignoreNode = document.createElement('div');
+            ignoreNode.className = 'context-menu-item';
+            ignoreNode.textContent = 'Ignore All Spelling in Entire Node';
+            ignoreNode.addEventListener('click', function() {
+              window.arcenApi.requestIgnoreNode(item.file, item.absPos);
+              dismissContextMenu();
+            });
+            menu.appendChild(ignoreNode);
+          }
+
+          var sep = document.createElement('div');
+          sep.style.cssText = 'border-top: 1px solid var(--border); margin: 4px 0';
+          menu.appendChild(sep);
+        }
+
+        if (isMixedScript) {
+          // Mixed-script word — might be a homoglyph typo (Сhicken with Cyrillic С)
+          // OR a legitimate Unicode word (Bastnäsite, café). Offer the auto-fix below
+          // the dictionary actions.
+          var asciiMatch = item.message.match(/Did you mean: ([^?]+)\?/);
+          var asciiSug = asciiMatch ? asciiMatch[1].trim() : null;
+          if (asciiSug && misspelledWord) {
+            var fixItem = document.createElement('div');
+            fixItem.className = 'context-menu-item';
+            fixItem.textContent = 'Replace with "' + asciiSug + '" (fix homoglyphs)';
+            fixItem.addEventListener('click', function() {
+              window.arcenApi?.requestReplace(item.file, misspelledWord, asciiSug);
+              allResults = allResults.filter(function(r) { return r !== item; });
+              renderResults();
+              dismissContextMenu();
+            });
+            menu.appendChild(fixItem);
+          }
+        } else {
+          // Regular misspelling — fetch suggestions lazily via IPC, appended below
+          var loadingItem = document.createElement('div');
+          loadingItem.className = 'context-menu-item';
+          loadingItem.style.cssText = 'opacity: 0.6; font-style: italic; cursor: default';
+          loadingItem.textContent = 'Loading suggestions...';
+          menu.appendChild(loadingItem);
+
+          if (misspelledWord && window.arcenApi?.getSuggestions) {
+            window.arcenApi.getSuggestions(misspelledWord).then(function(suggestions) {
+              if (activeContextMenu !== menu) return;
+              var anchor = loadingItem.nextSibling;
+              loadingItem.remove();
+              var sugsToAdd = (suggestions || []).slice(0, 5);
+              if (sugsToAdd.length === 0) {
+                var none = document.createElement('div');
+                none.className = 'context-menu-item';
+                none.style.cssText = 'opacity: 0.6; font-style: italic; cursor: default';
+                none.textContent = 'No suggestions';
+                menu.insertBefore(none, anchor);
+              } else {
+                sugsToAdd.forEach(function(sug) {
+                  var sugItem = document.createElement('div');
+                  sugItem.className = 'context-menu-item';
+                  sugItem.textContent = 'Replace with "' + sug + '"';
+                  sugItem.addEventListener('click', function() {
+                    if (misspelledWord) {
+                      window.arcenApi?.requestReplace(item.file, misspelledWord, sug);
+                      allResults = allResults.filter(function(r) { return r !== item; });
+                      renderResults();
+                    }
+                    dismissContextMenu();
+                  });
+                  menu.insertBefore(sugItem, anchor);
+                });
+              }
+            });
+          }
+        }
+      } else if (item.message.startsWith('Grammar (')) {
+        // Grammar entries (Phase 2 — LLM-backed). Two actions:
+        //   - "Replace with X" if the lint provided a suggested fix.
+        //   - "Dismiss this issue" — adds the lint's fingerprint to the
+        //     cache file's dismissed list for THIS exact text. The dismissal
+        //     stays as long as the text doesn't change; rewriting the field
+        //     produces a new hash and a fresh check.
+        if (item.grammarFix && item.grammarQuote) {
+          var grFix = document.createElement('div');
+          grFix.className = 'context-menu-item';
+          grFix.textContent = 'Replace with "' + item.grammarFix + '"';
+          grFix.addEventListener('click', function() {
+            window.arcenApi?.requestReplace(item.file, item.grammarQuote, item.grammarFix);
+            allResults = allResults.filter(function(r) { return r !== item; });
+            renderResults();
+            dismissContextMenu();
+          });
+          menu.appendChild(grFix);
+        }
+        var resolveItem = document.createElement('div');
+        resolveItem.className = 'context-menu-item';
+        resolveItem.textContent = 'Mark as resolved (until next check)';
+        resolveItem.title = 'Removes this entry from the list now. The next Grammar Check will re-evaluate this text from scratch — useful when you\'ve already typed your own fix.';
+        resolveItem.addEventListener('click', function() {
+          if (item.grammarTextHash && item.grammarFingerprint) {
+            window.arcenApi?.requestGrammarResolve?.(item.grammarTextHash, item.grammarFingerprint);
+            allResults = allResults.filter(function(r) { return r !== item; });
+            renderResults();
+          }
+          dismissContextMenu();
+        });
+        menu.appendChild(resolveItem);
+
+        var dismissItem = document.createElement('div');
+        dismissItem.className = 'context-menu-item';
+        dismissItem.textContent = 'Dismiss this issue (permanent for this text)';
+        dismissItem.title = 'Stores a dismissal in the on-disk cache. This entry won\'t come back as long as the surrounding text is unchanged. Editing the text gives it a new hash and a fresh check.';
+        dismissItem.addEventListener('click', function() {
+          if (item.grammarTextHash && item.grammarFingerprint) {
+            window.arcenApi?.requestGrammarDismiss?.(item.grammarTextHash, item.grammarFingerprint);
+            allResults = allResults.filter(function(r) { return r !== item; });
+            renderResults();
+          }
+          dismissContextMenu();
+        });
+        menu.appendChild(dismissItem);
+      }
+
+      document.body.appendChild(menu);
+      activeContextMenu = menu;
+      var rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - rect.width - 4) + 'px';
+      if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
+    }
+
+    function dismissContextMenu() {
+      if (activeContextMenu) {
+        activeContextMenu.remove();
+        activeContextMenu = null;
+      }
+    }
+
+    document.addEventListener('click', dismissContextMenu);
+    document.addEventListener('contextmenu', function(e) {
+      if (!e.target.closest('.entry')) dismissContextMenu();
+    });
+
+    // Initialize filter buttons
+    setFilter('all');
+  </script>
+</body>
+</html>
