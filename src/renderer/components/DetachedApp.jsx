@@ -13,7 +13,7 @@ import TitleBar from './TitleBar';
 import GoToLineDialog from './GoToLineDialog';
 import GrammarSettings from './GrammarSettings';
 const vcsStore = require('../editor/vcsStore');
-import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey } from '../editor/schemaParser';
+import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey, composeSchemaForFileLayer } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
 import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { buildLayerMaps } from '../editor/validation';
@@ -50,6 +50,13 @@ export default function DetachedApp({ windowId }) {
   }
   // relativePath → { layer, layerNum } for non-base files (tab tags).
   const [layerByRelPath, setLayerByRelPath] = useState(new Map());
+  // Parsed mod schema extensions: { [modLayer]: { [folderName]: parsedExt } }.
+  // Loaded at startup so files inside a mod see the extra attributes/sub-nodes
+  // that mod's _<Table>.metadata contributes (otherwise the editor flags them
+  // as unknown). Base/DLC files never have extensions, so this stays inert for
+  // them. State (not a ref) so the composed-schema memo recomputes once the
+  // async load commits.
+  const [schemaExtensions, setSchemaExtensions] = useState({});
   // Layer info maps — needed by the FK picker's mod-deps widening. The full
   // map gets stashed in a ref because EditorPane reads through getters.
   const layerMapsRef = useRef({ expansionDirNameToLayer: {}, modFolderNameToLayer: {}, modDisplayByLayer: {}, modExtrasByLayer: {} });
@@ -104,6 +111,22 @@ export default function DetachedApp({ windowId }) {
         schemaMap[folder.name] = parseMetadata(metaContent, folder.name);
       }
       schemasRef.current = schemaMap;
+
+      // Parse mod schema extensions (the _<Table>.metadata files a mod ships to
+      // add fields/sub-nodes to a table whose primary schema lives in base/DLC).
+      // Mirrors the main window's loadExtensionsAndIndex; without this, mod data
+      // files opened here flag every mod-added attribute as unknown.
+      const extensionsMap = {};
+      for (const ext of (data.schemaExtensions || [])) {
+        try {
+          const txt = await window.arcenApi.readFile(ext.metadataRelPath);
+          const parsed = parseMetadata(txt, ext.folderName);
+          if (!parsed) continue;
+          if (!extensionsMap[ext.modLayer]) extensionsMap[ext.modLayer] = {};
+          extensionsMap[ext.modLayer][ext.folderName] = parsed;
+        } catch (_) {}
+      }
+      setSchemaExtensions(extensionsMap);
 
       const bulk = {};
       for (const folder of data.folders) {
@@ -443,6 +466,23 @@ export default function DetachedApp({ windowId }) {
     return schemasRef.current[folderName] ?? null;
   })();
 
+  // Base merged schema composed with any mod schema extensions that apply to
+  // the active file's layer — same derivation the main window feeds EditorPane.
+  // For base/DLC files composeSchemaForFileLayer is a no-op and returns the
+  // plain merged schema; only mod-layer files actually gain the extension
+  // attributes/sub-nodes. EditorPane falls back to building the plain merged
+  // schema itself when this is null (metadata tabs, pre-load).
+  const composedMergedSchema = useMemo(() => {
+    if (!activeTab || activeTab.type === 'schema') return null;
+    const shared = sharedSchemaRef.current;
+    if (!shared || !activeSchema) return null;
+    const merged = buildMergedSchema(shared, activeSchema);
+    if (!merged) return null;
+    const folderName = activeSchema.folderName || folderNameOf(activeTab.relativePath);
+    const layer = layerByRelPath.get(activeTab.relativePath)?.layer || 'base';
+    return composeSchemaForFileLayer(merged, schemaExtensions, layerMapsRef.current.modExtrasByLayer, layer, folderName);
+  }, [activeTab, activeSchema, schemaExtensions, layerByRelPath]);
+
   // Ctrl+click navigation — same shared implementation the main window uses, so
   // detached windows are no longer dead-ended on these (they previously wired
   // these props to empty no-ops, so Ctrl+click on an FK value or attribute name
@@ -690,6 +730,7 @@ export default function DetachedApp({ windowId }) {
                 savedContent={savedContents[activeTab.relativePath] ?? ''}
                 schema={activeSchema}
                 sharedSchema={sharedSchemaRef.current}
+                composedMergedSchema={composedMergedSchema}
                 isSchema={activeTab.type === 'schema'}
                 onChange={updateContent}
                 theme={theme}
