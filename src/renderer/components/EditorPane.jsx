@@ -773,16 +773,29 @@ export default function EditorPane({
 
     return () => {
       // Save cursor and scroll position to central registry before destroying.
-      // Compute scrollLine fresh from the live view — lastScrollLineRef is
-      // only updated by scroll events, so it's stale if the user never
-      // scrolled since the initial restore.
+      // lastScrollLineRef is kept continuously current — updated synchronously
+      // by the scroll handler and seeded to the restored line on mount — so it
+      // is the authoritative value here. We only attempt a fresh read from the
+      // live DOM when scrollDOM is STILL CONNECTED.
+      //
+      // On a key-change unmount (switching tabs), this useEffect cleanup runs
+      // in React's passive phase, AFTER the mutation phase has already detached
+      // the editor's DOM. A detached element reports scrollTop === 0, so the
+      // fresh read would resolve to line 1 and clobber the real position —
+      // losing scroll on every tab switch, back/forward nav, and session
+      // reopen. The isConnected guard skips the fresh read in that case and
+      // falls back to lastScrollLineRef. For a same-instance re-run (theme /
+      // editorScale toggle) the container stays connected and the fresh read
+      // is accurate.
       if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
       const cursor = view.state.selection.main.head;
       let scrollLine = lastScrollLineRef.current;
-      try {
-        const topPos = view.lineBlockAtHeight(view.scrollDOM.scrollTop + 1).from;
-        scrollLine = view.state.doc.lineAt(topPos).number;
-      } catch (_) {}
+      if (view.scrollDOM.isConnected) {
+        try {
+          const topPos = view.lineBlockAtHeight(view.scrollDOM.scrollTop + 1).from;
+          scrollLine = view.state.doc.lineAt(topPos).number;
+        } catch (_) {}
+      }
       window.arcenApi.setFileState(relativePath, { cursor, scrollLine });
       // Mirror into fileStateRef so a remount that keeps the same
       // relativePath (theme / editorScale toggles) restores from the
