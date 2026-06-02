@@ -994,6 +994,7 @@ export default function App() {
   const schemasLatest = useRef(schemas);
   const sharedSchemaLatest = useRef(sharedSchema);
   const fkIndexLatest = useRef(fkIndex);
+  const foldersLatest = useRef(folders);
   const expansionDirNameToLayerLatest = useRef(expansionDirNameToLayer);
   const layerMapsLatest = useRef(layerMaps);
   const schemaExtensionsLatest = useRef(schemaExtensions);
@@ -1009,6 +1010,7 @@ export default function App() {
   useEffect(() => { schemasLatest.current = schemas; }, [schemas]);
   useEffect(() => { sharedSchemaLatest.current = sharedSchema; }, [sharedSchema]);
   useEffect(() => { fkIndexLatest.current = fkIndex; }, [fkIndex]);
+  useEffect(() => { foldersLatest.current = folders; }, [folders]);
   useEffect(() => { expansionDirNameToLayerLatest.current = expansionDirNameToLayer; }, [expansionDirNameToLayer]);
   useEffect(() => { layerMapsLatest.current = layerMaps; }, [layerMaps]);
   useEffect(() => { schemaExtensionsLatest.current = schemaExtensions; }, [schemaExtensions]);
@@ -1018,6 +1020,44 @@ export default function App() {
   // retry chain still pending for it — we never have two loops racing on the
   // same path. Other paths keep their independent retry state.
   const metadataRetryTimersRef = useRef(new Map());
+
+  // Fold one XML file's *current cached content* into the FK index, in place.
+  //
+  // Recomputes only that file's table (every layer) from allFileContentsRef and
+  // advances BOTH the synchronous source-of-truth ref (fkIndexLatest.current)
+  // and React state, then returns the fresh index. Centralizing it here is what
+  // lets a brand-new core node become referenceable without a restart, no matter
+  // which path introduced it:
+  //   - in-app save        → saveFile calls this and validates against the result
+  //   - external tool / VCS → the on-disk watcher calls this on reload
+  //   - another window      → same on-disk watcher path
+  //
+  // Two deliberate choices:
+  //   1. Base the rebuild on fkIndexLatest.current (the ref), never a render
+  //      closure. Within a single save the `fkIndex` closure still predates the
+  //      node the user just wrote, which is exactly the bug this fixes.
+  //   2. Advance fkIndexLatest.current SYNCHRONOUSLY. The deferred re-validation
+  //      in saveFile — and any sibling save in the same tick (Save All) — then
+  //      sees the new node immediately instead of waiting for a React commit.
+  //
+  // Stable identity ([] deps, all inputs via refs) so the once-registered file
+  // watcher can call it without capturing a stale version.
+  const foldXmlFileIntoFKIndex = useCallback((relPath) => {
+    const folderName = folderNameOf(relPath);
+    const folder = foldersLatest.current.find((f) => f.name === folderName);
+    const schema = schemasLatest.current[folderName];
+    if (!folder || !schema || !schema.nodeName) return fkIndexLatest.current;
+    const layeredContents = folder.xmlFiles.map((xf) => ({
+      layer: xf.layer || 'base',
+      content: allFileContentsRef.current[xf.relativePath] || '',
+    }));
+    const centralIdKey = getCentralIdentifierKey(sharedSchemaLatest.current);
+    const next = { ...fkIndexLatest.current };
+    updateTableIndex(next, folderName, layeredContents, schema.nodeName, schemasLatest.current, centralIdKey);
+    fkIndexLatest.current = next;
+    setFkIndex(next);
+    return next;
+  }, []);
 
   // ── File watcher (registered once, uses refs for latest state) ──
   useEffect(() => {
@@ -1064,6 +1104,14 @@ export default function App() {
         }
         // Always update the bulk cache
         allFileContentsRef.current[relPath] = content;
+
+        // Keep the FK index current for externally-changed XML — a node added by
+        // another window, an external editor, or a VCS update must be
+        // referenceable here without a restart, exactly like an in-app save.
+        // (.metadata files take the schema-reparse path below instead.)
+        if (!relPath.endsWith('.metadata')) {
+          foldXmlFileIntoFKIndex(relPath);
+        }
 
         // Force the live-rescan effect to schedule a fresh scan after this disk
         // reload — without this nudge, an externally-modified file could leave
@@ -1538,24 +1586,17 @@ export default function App() {
       return; // schema files don't need FK index or XML validation
     }
 
-    // Incremental FK index update for the folder. Pass schemas so the
-    // compound `Parent:Child` (sub-source) pair set is rebuilt too —
-    // skipping it leaves subIds/subSorted stale and any cross-table
-    // reference using `node_sub_source` would transiently fail until
-    // the next manual revalidate.
     const schema = schemas[folderName];
-    if (folder && schema && schema.nodeName) {
-      const layeredContents = folder.xmlFiles.map((xf) => ({
-        layer: xf.layer || 'base',
-        content: allFileContentsRef.current[xf.relativePath] || '',
-      }));
-      const centralIdKey = getCentralIdentifierKey(sharedSchemaLatest.current);
-      setFkIndex((prev) => {
-        const next = { ...prev };
-        updateTableIndex(next, folderName, layeredContents, schema.nodeName, schemas, centralIdKey);
-        return next;
-      });
-    }
+    // Incrementally fold this file's just-saved content into the FK index and
+    // capture the fresh index. The deferred re-validation below MUST validate
+    // against this (not the `fkIndex` render closure): when the save introduces
+    // a new core node AND a reference to it in the same file, the closure
+    // predates the new node, so it would flag the reference as "not found"
+    // until a restart rebuilt the index from disk. The helper also rebuilds the
+    // compound `Parent:Child` (sub-source) pair set, so `node_sub_source`
+    // cross-table references stay current too. No-ops gracefully (returning the
+    // latest index) for files whose table has no nodeName.
+    const postSaveFkIndex = foldXmlFileIntoFKIndex(relativePath);
 
     // Re-validate this file (deferred to avoid blocking save)
     if (sharedSchema && schema && !schema.neverValidate) {
@@ -1568,7 +1609,7 @@ export default function App() {
           const composed = composeSchemaForFileLayer(
             merged, schemaExtensionsLatest.current, lm.modExtrasByLayer, savedLayer, folderName
           );
-          const newErrors = validateXMLFile(content, relativePath, composed, fkIndex, lookupSwapsRef.current, {
+          const newErrors = validateXMLFile(content, relativePath, composed, postSaveFkIndex, lookupSwapsRef.current, {
             layer: savedLayer,
             folderName,
             expansionDirNameToLayer: lm.expansionDirNameToLayer,
@@ -1595,7 +1636,7 @@ export default function App() {
         }
       }, 50);
     }
-  }, [fileContents, folders, schemas, sharedSchema, fkIndex]);
+  }, [fileContents, folders, schemas, sharedSchema, foldXmlFileIntoFKIndex]);
 
   // ── Update content ──
   const updateContent = useCallback((relativePath, newContent) => {
@@ -1973,6 +2014,10 @@ export default function App() {
     }
     const centralIdKey = getCentralIdentifierKey(sharedSchemaLatest.current);
     const freshIndex = buildFKIndex(folders, allFileContentsRef.current, latestSchemas, centralIdKey);
+    // Advance the synchronous source-of-truth ref too (not just state), so an
+    // incremental fold from a save/watch event in this same tick bases off this
+    // full rebuild instead of clobbering it with a stale single-table update.
+    fkIndexLatest.current = freshIndex;
     setFkIndex(freshIndex);
     lookupSwapsRef.current = buildLookupSwaps(allFileContentsRef.current, centralIdKey);
 

@@ -14,7 +14,7 @@ import GoToLineDialog from './GoToLineDialog';
 import GrammarSettings from './GrammarSettings';
 const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey } from '../editor/schemaParser';
-import { buildFKIndex, buildLookupSwaps } from '../editor/fkIndex';
+import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
 import { buildLayerMaps } from '../editor/validation';
 import { validateXMLFile } from '../editor/validation';
 import NSpell from 'nspell';
@@ -293,6 +293,9 @@ export default function DetachedApp({ windowId }) {
           return;
         }
         allFileContentsRef.current[relPath] = content;
+        // Keep FK pickers current for externally-changed XML (main window,
+        // external tools, VCS) — no-ops for .metadata internally.
+        foldXmlFileIntoFKIndex(relPath);
         if (fileContentsLatest.current[relPath] !== undefined) {
           setFileContents(prev => ({ ...prev, [relPath]: content }));
           setSavedContents(prev => ({ ...prev, [relPath]: content }));
@@ -342,6 +345,28 @@ export default function DetachedApp({ windowId }) {
     syncTabs();
   }, [tabs, activeTabIndex, fileContents, savedContents]);
 
+  // Refold one XML file's current cached content into this window's FK index so
+  // a brand-new core node is immediately pickable in the FK dropdowns/lists
+  // without a restart — matching the main window's foldXmlFileIntoFKIndex. The
+  // detached window keeps its index in a ref (no validator of its own), so this
+  // only mutates the ref; the re-render from the triggering save/reload hands
+  // the fresh index to EditorPane.
+  const foldXmlFileIntoFKIndex = useCallback((relPath) => {
+    if (relPath.endsWith('.metadata')) return;
+    const folderName = folderNameOf(relPath);
+    const folder = foldersRef.current.find((f) => f.name === folderName);
+    const schema = schemasRef.current[folderName];
+    if (!folder || !schema || !schema.nodeName) return;
+    const layeredContents = folder.xmlFiles.map((xf) => ({
+      layer: xf.layer || 'base',
+      content: allFileContentsRef.current[xf.relativePath] || '',
+    }));
+    const centralIdKey = getCentralIdentifierKey(sharedSchemaRef.current);
+    const next = { ...fkIndexRef.current };
+    updateTableIndex(next, folderName, layeredContents, schema.nodeName, schemasRef.current, centralIdKey);
+    fkIndexRef.current = next;
+  }, []);
+
   // ── Save ──
   const saveFile = useCallback(async (relativePath) => {
     const content = fileContents[relativePath];
@@ -349,9 +374,10 @@ export default function DetachedApp({ windowId }) {
     await window.arcenApi.writeFile(relativePath, content);
     setSavedContents(prev => ({ ...prev, [relativePath]: content }));
     allFileContentsRef.current[relativePath] = content;
+    foldXmlFileIntoFKIndex(relativePath);
     recentSavesRef.current.add(relativePath);
     setTimeout(() => recentSavesRef.current.delete(relativePath), 5000);
-  }, [fileContents]);
+  }, [fileContents, foldXmlFileIntoFKIndex]);
 
   const updateContent = useCallback((relativePath, newContent) => {
     setFileContents(prev => ({ ...prev, [relativePath]: newContent }));
