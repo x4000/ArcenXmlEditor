@@ -100,6 +100,9 @@ function saveRecentDataRoots(roots) {
   } catch (e) {
     console.error('Failed to save recent data roots:', e.message);
   }
+  // Keep the taskbar jump list in sync with the recent list (no-op off Windows
+  // / in dev). updateJumpList is hoisted; it only runs once app is ready.
+  updateJumpList();
 }
 
 // De-duplicate by normalized path (case-insensitive on Windows), move the
@@ -187,6 +190,8 @@ function setRootNickname(root, nickname) {
   if (trimmed) map[key] = trimmed;
   else delete map[key]; // clearing the nickname reverts to the default name
   saveNicknames(map);
+  // The jump list shows each root's display name, so refresh it too.
+  updateJumpList();
 }
 function defaultProjectName(root) {
   if (!root) return 'Arcen XML Editor';
@@ -200,6 +205,54 @@ function computeProjectName(root) {
 // edit so open windows refresh their titles without a reload.
 function broadcastProjectName() {
   broadcastToAll('project-name-changed', computeProjectName(DATA_ROOT));
+}
+
+// ── Windows taskbar jump list ────────────────────────────────────────────
+// Right-click the taskbar icon → a "Recent Folders" list; clicking one launches
+// a NEW instance of AXE on that folder (resolveDataRoot's --data-root branch).
+// There's no single-instance lock, so each launch is its own process — like VS
+// opening multiple solutions. Windows-only. Refreshed whenever the recent list
+// or a nickname changes. Safe to call before app-ready (guarded + try/catch).
+//
+// Requires app.setAppUserModelId (done at startup) — without an explicit AppID
+// Windows won't host the custom jump list. A side effect on a directly-pinned
+// portable exe is that the running window may not group under that exact pin;
+// pin the build's shortcut (same AppID) to keep them grouped.
+function updateJumpList() {
+  if (process.platform !== 'win32') return;
+  if (typeof app.setJumpList !== 'function') return;
+  try {
+    const roots = loadRecentDataRoots().filter(isValidDataRoot).slice(0, 12);
+    if (roots.length === 0) {
+      app.setJumpList(null); // clears any previously-set list
+      return;
+    }
+    // Packaged: process.execPath is ArcenXmlEd.exe — relaunching it with
+    // --data-root is enough. Dev: it's electron.exe, which also needs the app
+    // directory as its leading arg (so the jump list is testable via npm start).
+    const appPrefix = app.isPackaged ? '' : `"${app.getAppPath()}" `;
+    const items = roots.map((root) => {
+      // Strip any trailing separator: a path ending in "\" would turn the
+      // closing quote into an escaped quote (\") and break arg parsing.
+      const arg = String(root).replace(/[\\/]+$/, '');
+      return {
+        type: 'task',
+        title: computeProjectName(root),  // honors per-root nicknames
+        description: root,                // full path on hover
+        program: process.execPath,
+        args: `${appPrefix}--data-root "${arg}"`,
+        iconPath: process.execPath,       // the app's own icon
+        iconIndex: 0,
+      };
+    });
+    // setJumpList returns a status string — 'ok' on success, otherwise an error
+    // code (e.g. 'customCategoryAccessDeniedError' when the user has turned off
+    // "recently opened items" in Windows settings). Only surface failures.
+    const result = app.setJumpList([{ type: 'custom', name: 'Recent Folders', items }]);
+    if (result !== 'ok') console.warn(`[jumplist] setJumpList returned "${result}"`);
+  } catch (e) {
+    console.warn('Failed to set taskbar jump list:', e.message);
+  }
 }
 
 // One-time migration from the old dual-location `_editor_config.json`
@@ -347,11 +400,35 @@ function isValidDataRoot(dir) {
   return detectLayout(dir) !== null;
 }
 
+// A data root passed on the command line. The taskbar jump list (see
+// updateJumpList) launches `ArcenXmlEd.exe --data-root "<folder>"` to open a
+// NEW instance on that folder — there's no single-instance lock, so every
+// launch is its own process, like Visual Studio opening multiple solutions.
+function getCliDataRoot() {
+  const argv = process.argv;
+  const i = argv.indexOf('--data-root');
+  if (i >= 0 && i + 1 < argv.length) {
+    const candidate = argv[i + 1];
+    if (candidate && isValidDataRoot(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function resolveDataRoot() {
   // Pull in anything from the old `_editor_config.json` scheme before
   // consulting xmlEdLast.json, so a user upgrading from a previous build
   // doesn't lose their data root.
   migrateOldConfigIfNeeded();
+
+  // 0. Explicit command-line root (a taskbar jump-list launch). The user picked
+  //    this exact folder, so it wins over the saved last root, and we record it
+  //    as the new last/recent so a later plain launch reopens it.
+  const cliRoot = getCliDataRoot();
+  if (cliRoot) {
+    saveLastDataRoot(cliRoot);
+    addToRecentDataRoots(cliRoot);
+    return cliRoot;
+  }
 
   // 1. Environment variable
   if (process.env.ARCEN_DATA_ROOT && isValidDataRoot(process.env.ARCEN_DATA_ROOT)) {
@@ -2497,6 +2574,14 @@ function startFileWatcher() {
 // ─── App Lifecycle ───────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Windows needs an explicit Application User Model ID for the taskbar to host
+  // a custom jump list (and for notifications). Must be set before any window
+  // is created. Matches the electron-builder `appId` so a build-created
+  // shortcut with the same ID groups with the running window.
+  if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
+    app.setAppUserModelId('com.arcen.xmleditor');
+  }
+
   DATA_ROOT = await resolveDataRoot();
   currentLayout = detectLayout(DATA_ROOT);
   refreshDataHomePaths();
@@ -2506,6 +2591,10 @@ app.whenReady().then(async () => {
   }
 
   createMainWindow();
+
+  // Seed the taskbar jump list from the recent list on startup. (Root switches
+  // and nickname edits refresh it later via saveRecentDataRoots/setRootNickname.)
+  updateJumpList();
 
   if (DATA_ROOT) {
     startFileWatcher();
