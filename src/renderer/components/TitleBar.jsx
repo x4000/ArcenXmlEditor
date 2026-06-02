@@ -122,7 +122,7 @@ function HoverPip({ status, size, hitWidth, hitHeight, tooltipHeading, tooltipBo
   );
 }
 
-export default function TitleBar({ navState, onBack, onForward, mode, windowId }) {
+export default function TitleBar({ navState, onBack, onForward, mode, windowId, activeFileName }) {
   const [state, setState] = useState({ statusBackendLive: false, repoRollup: 'clean', dataRollup: 'clean', active: null });
   const [menu, setMenu] = useState(null);
   // Display number for detached windows. It's derived from current
@@ -131,6 +131,29 @@ export default function TitleBar({ navState, onBack, onForward, mode, windowId }
   // Not based on windowId, which is a stable internal ID that can
   // carry forward arbitrarily large numbers across root switches.
   const [displayNum, setDisplayNum] = useState(null);
+  // Short project name for the current data root (folder name with underscores
+  // stripped, or the user's per-root nickname). Pushed by main on nickname edits.
+  const [projectName, setProjectName] = useState('Arcen XML Editor');
+
+  useEffect(() => {
+    let mounted = true;
+    window.arcenApi.getProjectName?.().then((n) => { if (mounted && n) setProjectName(n); });
+    window.arcenApi.onProjectNameChanged?.((n) => { if (mounted && n) setProjectName(n); });
+    return () => { mounted = false; };
+  }, []);
+
+  // The full window title. With a file open: "<Project> - <File>". Empty: just
+  // "<Project>" for the main window, or "<Project>-<N>" for detached windows so
+  // each empty detached window is distinguishable (first detached → "-2").
+  const windowTitle = activeFileName
+    ? `${projectName} - ${activeFileName}`
+    : (mode === 'detached'
+        ? (displayNum ? `${projectName}-${displayNum + 1}` : projectName)
+        : projectName);
+
+  // Drive the OS window title / taskbar entry. main.js no longer overrides this
+  // (it lets document.title through), so this is the single source of truth.
+  useEffect(() => { document.title = windowTitle; }, [windowTitle]);
 
   useEffect(() => {
     return vcsStore.subscribe((s) => {
@@ -253,8 +276,9 @@ export default function TitleBar({ navState, onBack, onForward, mode, windowId }
         <span
           className="title-text"
           onContextMenu={openTitleContextMenu}
+          title={windowTitle}
         >
-          {mode === 'detached' ? `AXE Detached${displayNum ? ` ${displayNum}` : ''}` : 'Arcen XML Editor'}
+          {windowTitle}
         </span>
         {showPips && (
           <span style={{ display: 'inline-flex', gap: 0, marginLeft: 16, WebkitAppRegion: 'no-drag' }}>

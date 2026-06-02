@@ -21,13 +21,24 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
   const [recent, setRecent] = useState(null); // null = loading
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // path pending removal from the recent list
+  const [nicknames, setNicknames] = useState({}); // { [normalizedPath]: displayName }
+  const [rowMenu, setRowMenu] = useState(null);    // { path, x, y } right-click menu
+  const [renameTarget, setRenameTarget] = useState(null); // path being given a display nickname
+  const [renameValue, setRenameValue] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const list = await window.arcenApi.getRecentDataRoots();
-        if (!cancelled) setRecent(Array.isArray(list) ? list : []);
+        const [list, nicks] = await Promise.all([
+          window.arcenApi.getRecentDataRoots(),
+          window.arcenApi.getRootNicknames?.() ?? {},
+        ]);
+        if (!cancelled) {
+          setRecent(Array.isArray(list) ? list : []);
+          setNicknames(nicks && typeof nicks === 'object' ? nicks : {});
+        }
       } catch (e) {
         if (!cancelled) setRecent([]);
       }
@@ -40,12 +51,16 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
     const onKey = (e) => {
       if (e.key === 'Escape' && !busy) {
         e.preventDefault();
-        onClose();
+        // Esc backs out of the topmost overlay first, then the picker.
+        if (renameTarget) setRenameTarget(null);
+        else if (rowMenu) setRowMenu(null);
+        else if (confirmDelete) setConfirmDelete(null);
+        else onClose();
       }
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [onClose, busy]);
+  }, [onClose, busy, confirmDelete, rowMenu, renameTarget]);
 
   const pickRecent = useCallback(async (absPath) => {
     if (busy) return;
@@ -83,6 +98,43 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
       setBusy(false);
     }
   }, [busy, onPicked]);
+
+  // Remove an entry from the recent list (the folder on disk is untouched).
+  const doDelete = useCallback(async (absPath) => {
+    try {
+      const updated = await window.arcenApi.removeRecentDataRoot(absPath);
+      setRecent(Array.isArray(updated) ? updated : (prev) => (prev || []).filter((r) => r !== absPath));
+    } catch (e) {
+      setError(e?.message || 'Failed to remove that folder from the list.');
+    } finally {
+      setConfirmDelete(null);
+    }
+  }, []);
+
+  // Final path segment, for the confirmation prompt ("delete <folder> …").
+  const folderLabel = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+  // The default window-title name for a root: folder segment, underscores
+  // stripped (mirrors main.js defaultProjectName so the rename field prefills
+  // with what the title would otherwise show).
+  const defaultName = (p) => folderLabel(p).replace(/_/g, '');
+  const nameFor = (p) => (nicknames[normalize(p)] || defaultName(p));
+
+  const openRename = (p) => {
+    setRowMenu(null);
+    setRenameValue(nameFor(p));
+    setRenameTarget(p);
+  };
+
+  const saveRename = useCallback(async (absPath, value) => {
+    try {
+      const updated = await window.arcenApi.setRootNickname(absPath, value);
+      if (updated && typeof updated === 'object') setNicknames(updated);
+    } catch (e) {
+      setError(e?.message || 'Failed to set the display name.');
+    } finally {
+      setRenameTarget(null);
+    }
+  }, []);
 
   const normalize = (p) => (p || '').replace(/[\\/]+$/, '').toLowerCase();
   const currentKey = normalize(currentRoot);
@@ -132,6 +184,7 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
     : {};
 
   return (
+    <>
     <div
       style={outerStyle}
       onMouseDown={(e) => { if (!busy) onClose(); }}
@@ -186,6 +239,7 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
               <div
                 key={p}
                 onClick={() => !isCurrent && !busy && pickRecent(p)}
+                onContextMenu={(e) => { e.preventDefault(); if (!busy) setRowMenu({ path: p, x: e.clientX, y: e.clientY }); }}
                 style={{
                   padding: '8px 14px',
                   cursor: isCurrent || busy ? 'default' : 'pointer',
@@ -195,7 +249,7 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
                 }}
                 onMouseEnter={(e) => { if (!isCurrent && !busy) e.currentTarget.style.background = 'var(--selection)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = isCurrent ? currentBg : 'transparent'; }}
-                title={p}
+                title={`${p}\n(right-click to rename the window title or remove from this list)`}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
@@ -207,8 +261,16 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
                     {p}
                   </div>
                 </div>
+                {nicknames[normalize(p)] && (
+                  <div
+                    style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic', flexShrink: 0 }}
+                    title="Window-title name for this folder"
+                  >
+                    “{nicknames[normalize(p)]}”
+                  </div>
+                )}
                 {isCurrent && (
-                  <div style={{ fontSize: 11, color: 'var(--text)', fontStyle: 'italic' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text)', fontStyle: 'italic', flexShrink: 0 }}>
                     (current)
                   </div>
                 )}
@@ -267,5 +329,153 @@ export default function DataRootPicker({ currentRoot, anchor, onClose, onPicked 
         </div>
       </div>
     </div>
+
+    {/* Confirm removal of a recent entry (right-click → delete). */}
+    {confirmDelete && (
+      <div
+        style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2100,
+          background: 'rgba(0, 0, 0, 0.45)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+        onMouseDown={() => setConfirmDelete(null)}
+      >
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            width: 440, maxWidth: 'calc(100vw - 40px)',
+            background: 'var(--bg)', color: 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 6px 24px rgba(0, 0, 0, 0.4)',
+            padding: '16px 18px',
+          }}
+        >
+          <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 14 }}>
+            Do you wish to delete "{folderLabel(confirmDelete)}" from the recent data folders list? This will not affect the actual folder itself.
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button
+              onClick={() => setConfirmDelete(null)}
+              style={{
+                padding: '4px 14px', cursor: 'pointer',
+                background: 'transparent', color: 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => doDelete(confirmDelete)}
+              style={{
+                padding: '4px 14px', cursor: 'pointer',
+                background: 'var(--status-bar-error, #c62828)', color: '#fff',
+                border: '1px solid var(--status-bar-error, #c62828)', borderRadius: 3, fontSize: 12,
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Right-click row menu: rename the window-title name, or remove the entry. */}
+    {rowMenu && (
+      <div
+        style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2100 }}
+        onMouseDown={() => setRowMenu(null)}
+        onContextMenu={(e) => { e.preventDefault(); setRowMenu(null); }}
+      >
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed', top: rowMenu.y, left: rowMenu.x,
+            background: 'var(--bg)', color: 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 4,
+            boxShadow: '0 6px 16px rgba(0,0,0,0.35)', padding: 4, minWidth: 200, fontSize: 12,
+          }}
+        >
+          {[
+            { label: 'Rename window title…', action: () => openRename(rowMenu.path) },
+            { label: 'Remove from recent list', action: () => { const p = rowMenu.path; setRowMenu(null); setConfirmDelete(p); } },
+          ].map((it, i) => (
+            <div
+              key={i}
+              onClick={it.action}
+              style={{ padding: '5px 10px', cursor: 'pointer', whiteSpace: 'nowrap', borderRadius: 3 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--selection)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              {it.label}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {/* Rename a root's window-title display name (per-folder nickname). */}
+    {renameTarget && (
+      <div
+        style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 2100,
+          background: 'rgba(0, 0, 0, 0.45)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+        onMouseDown={() => setRenameTarget(null)}
+      >
+        <form
+          onMouseDown={(e) => e.stopPropagation()}
+          onSubmit={(e) => { e.preventDefault(); saveRename(renameTarget, renameValue); }}
+          style={{
+            width: 440, maxWidth: 'calc(100vw - 40px)',
+            background: 'var(--bg)', color: 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 6px 24px rgba(0, 0, 0, 0.4)', padding: '16px 18px',
+          }}
+      >
+          <div style={{ fontSize: 13, marginBottom: 6 }}>
+            Window-title name for "{folderLabel(renameTarget)}"
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
+            Shown in the title bar and taskbar for this folder. Clear it to use the default ({defaultName(renameTarget)}).
+          </div>
+          <input
+            autoFocus
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            placeholder={defaultName(renameTarget)}
+            style={{
+              width: '100%', boxSizing: 'border-box', padding: '6px 8px', fontSize: 13,
+              background: 'var(--input-bg, var(--bg))', color: 'var(--text)',
+              border: '1px solid var(--border)', borderRadius: 3, marginBottom: 14,
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setRenameTarget(null)}
+              style={{
+                padding: '4px 14px', cursor: 'pointer',
+                background: 'transparent', color: 'var(--text)',
+                border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              style={{
+                padding: '4px 14px', cursor: 'pointer',
+                background: 'var(--tab-bg)', color: '#fff',
+                border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+    )}
+    </>
   );
 }

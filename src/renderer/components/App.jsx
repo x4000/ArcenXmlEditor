@@ -16,6 +16,7 @@ import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '.
 import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps } from '../editor/validation';
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from '../editor/spellcheck';
 import { extractGrammarTargets } from '../editor/grammarTargets';
+import { fileDisplayName } from '../editor/layerDisplay';
 import NSpell from 'nspell';
 
 /**
@@ -3041,7 +3042,12 @@ export default function App() {
 
   return (
     <div className="app-root">
-      <TitleBar navState={navState} onBack={navigateBack} onForward={navigateForward} />
+      <TitleBar
+        navState={navState}
+        onBack={navigateBack}
+        onForward={navigateForward}
+        activeFileName={activeTab ? fileDisplayName(activeTab.relativePath.split('/').pop()) : null}
+      />
       <div className="app-container" style={{ flexDirection: sidebarSide === 'right' ? 'row-reverse' : 'row' }}>
       <Sidebar
         folders={folders}
@@ -3188,10 +3194,18 @@ export default function App() {
           onSelect={(vi) => {
             const realIdx = visibleTabs[vi]?.realIndex ?? -1;
             if (realIdx === activeTabIndex) {
-              // Already active — show diff if modified
+              // Clicking the tab you're already on re-centers the sidebar on
+              // that file (same as the tab right-click "Center … sidebar on
+              // this"). The diff view is still available via that right-click
+              // menu → "Show changes since save".
               const tab = tabs[realIdx];
-              if (tab && fileContents[tab.relativePath] !== savedContents[tab.relativePath]) {
-                setDiffTabIndex(realIdx);
+              if (tab) {
+                const isSchema = tab.type === 'schema';
+                setSidebarTab(isSchema ? 'schema' : 'files');
+                if (!isSchema) {
+                  setExpandedFolders((prev) => new Set(prev).add(folderNameOf(tab.relativePath)));
+                }
+                setScrollSidebarTo(tab.relativePath);
               }
             } else {
               captureSelectionNow();

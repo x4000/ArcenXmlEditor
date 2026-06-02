@@ -11,7 +11,15 @@ contextBridge.exposeInMainWorld('arcenApi', {
   getDataRoot: () => ipcRenderer.invoke('get-data-root'),
   selectDataRoot: () => ipcRenderer.invoke('select-data-root'),
   getRecentDataRoots: () => ipcRenderer.invoke('get-recent-data-roots'),
+  removeRecentDataRoot: (absPath) => ipcRenderer.invoke('remove-recent-data-root', absPath),
   setDataRoot: (absPath) => ipcRenderer.invoke('set-data-root', absPath),
+  // Window-title project name + per-root display nicknames.
+  getProjectName: () => ipcRenderer.invoke('get-project-name'),
+  onProjectNameChanged: (callback) => {
+    ipcRenderer.on('project-name-changed', (_event, name) => callback(name));
+  },
+  getRootNicknames: () => ipcRenderer.invoke('get-root-nicknames'),
+  setRootNickname: (absPath, nickname) => ipcRenderer.invoke('set-root-nickname', absPath, nickname),
 
   // File I/O
   readFile: (path) => ipcRenderer.invoke('read-file', path),

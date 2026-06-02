@@ -10,6 +10,7 @@ import EditorPane from './EditorPane';
 import StatusBar from './StatusBar';
 import DiffView from './DiffView';
 import TitleBar from './TitleBar';
+import { fileDisplayName } from '../editor/layerDisplay';
 import GoToLineDialog from './GoToLineDialog';
 import GrammarSettings from './GrammarSettings';
 const vcsStore = require('../editor/vcsStore');
@@ -666,7 +667,11 @@ export default function DetachedApp({ windowId }) {
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
       onDrop={handleDrop}
     >
-      <TitleBar mode="detached" windowId={windowId} />
+      <TitleBar
+        mode="detached"
+        windowId={windowId}
+        activeFileName={activeTab ? fileDisplayName(activeTab.relativePath.split('/').pop()) : null}
+      />
       <GoToLineDialog />
       <GrammarSettings />
       <div className="app-container">

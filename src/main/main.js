@@ -132,6 +132,76 @@ function addToRecentDataRoots(root) {
   saveRecentDataRoots(filtered);
 }
 
+// Drop a single entry from the recent list (user-initiated, from the Change
+// Data Folder picker's right-click). Does NOT touch the folder on disk — just
+// forgets it. Returns the updated list so the renderer can refresh in place.
+function removeFromRecentDataRoots(root) {
+  const key = normalizeRootForCompare(root);
+  const filtered = loadRecentDataRoots().filter((r) => normalizeRootForCompare(r) !== key);
+  saveRecentDataRoots(filtered);
+  return filtered;
+}
+
+// ── Window-title project name ────────────────────────────────────────────
+// The window title shows a short "project name" derived from the data root's
+// final folder segment. Default: that segment with underscores stripped
+// ("HotMRoot" stays "HotMRoot"; "AI_War2_Ultra" → "AIWar2Ultra"). The user can
+// override any root with a custom nickname (e.g. "AIW2Ultra"), stored per
+// normalized path in xmlEdNicknames.json and editable from the Change Data
+// Folder picker.
+function getNicknamesFile() {
+  const d = getSettingsDir();
+  return d ? path.join(d, 'xmlEdNicknames.json') : null;
+}
+function loadNicknames() {
+  const f = getNicknamesFile();
+  if (!f) return {};
+  try {
+    if (fs.existsSync(f)) {
+      const json = JSON.parse(fs.readFileSync(f, 'utf-8'));
+      if (json && typeof json.nicknames === 'object' && json.nicknames) return json.nicknames;
+    }
+  } catch (e) { /* ignore */ }
+  return {};
+}
+function saveNicknames(map) {
+  const f = getNicknamesFile();
+  if (!f) return;
+  ensureSettingsDir();
+  try {
+    fs.writeFileSync(f, JSON.stringify({ nicknames: map }, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Failed to save root nicknames:', e.message);
+  }
+}
+function getRootNickname(root) {
+  if (!root) return '';
+  const v = loadNicknames()[normalizeRootForCompare(root)];
+  return typeof v === 'string' ? v : '';
+}
+function setRootNickname(root, nickname) {
+  if (!root) return;
+  const map = loadNicknames();
+  const key = normalizeRootForCompare(root);
+  const trimmed = (nickname || '').trim();
+  if (trimmed) map[key] = trimmed;
+  else delete map[key]; // clearing the nickname reverts to the default name
+  saveNicknames(map);
+}
+function defaultProjectName(root) {
+  if (!root) return 'Arcen XML Editor';
+  const base = path.basename(String(root).replace(/[\\/]+$/, ''));
+  return base.replace(/_/g, '') || base || 'Arcen XML Editor';
+}
+function computeProjectName(root) {
+  return getRootNickname(root) || defaultProjectName(root);
+}
+// Push the current root's project name to every window — used after a nickname
+// edit so open windows refresh their titles without a reload.
+function broadcastProjectName() {
+  broadcastToAll('project-name-changed', computeProjectName(DATA_ROOT));
+}
+
 // One-time migration from the old dual-location `_editor_config.json`
 // scheme (next-to-exe + %APPDATA%/ArcenXmlEd/). If we find a dataRoot there
 // and don't already have xmlEdLast.json, import it. Leaves the old files
@@ -429,18 +499,6 @@ function findWindowForTab(relativePath) {
   return null;
 }
 
-// Title shown in the detached window's taskbar entry and title bar.
-// The *display* number is the window's rank among currently-open detached
-// windows, re-indexed from 1 whenever a window opens or closes — so the
-// user sees "1, 2, 3" regardless of the stable internal `det_N` IDs
-// (which may have grown to arbitrary values across root switches and
-// drag-out/close cycles). See renumberDetachedWindows().
-function detachedTitleFor(windowId) {
-  const entry = windowRegistry.get(windowId);
-  const n = entry?.displayNum;
-  return n ? `AXE Detached ${n}` : 'AXE Detached';
-}
-
 // Recompute the displayNum for every live detached window and push each
 // new title to its BrowserWindow. Ordering is by the numeric suffix of
 // the stable `det_N` windowId, which matches creation order.
@@ -460,10 +518,9 @@ function renumberDetachedWindows() {
     const entry = windowRegistry.get(id);
     if (!entry?.browserWindow || entry.browserWindow.isDestroyed()) return;
     entry.displayNum = idx + 1;
-    try { entry.browserWindow.setTitle(detachedTitleFor(id)); } catch (e) { /* window gone */ }
     // Push the number to the renderer — the custom frameless title bar
-    // (TitleBar.jsx) renders its own text and needs to refresh when a
-    // peer window opens or closes.
+    // (TitleBar.jsx) computes "<Project>-<N>" and sets document.title, which
+    // drives the OS title/taskbar. Refreshes when a peer window opens/closes.
     try { entry.browserWindow.webContents.send('detached-display-num', idx + 1); } catch (e) { /* webContents gone */ }
   });
 }
@@ -490,15 +547,11 @@ function createDetachedWindow(windowId, tabPaths, x, y, width, height) {
   const htmlPath = path.join(__dirname, '..', 'renderer', 'index.html');
   win.loadFile(htmlPath, { query: { mode: 'detached', windowId } });
 
-  // Set title after page loads (HTML <title> overrides BrowserWindow title)
-  win.webContents.on('did-finish-load', () => {
-    win.setTitle(detachedTitleFor(windowId));
-  });
-  // Also prevent page from changing it back
-  win.on('page-title-updated', (e) => {
-    e.preventDefault();
-    win.setTitle(detachedTitleFor(windowId));
-  });
+  // The renderer drives the window/taskbar title via document.title now
+  // (project name + current filename, or "<Project>-<N>" when empty — see
+  // TitleBar.jsx). We deliberately DON'T intercept page-title-updated here, so
+  // that document.title propagates to the OS title/taskbar. The display number
+  // the renderer needs still flows via 'detached-display-num' below.
 
   windowRegistry.set(windowId, {
     browserWindow: win,
@@ -2190,6 +2243,24 @@ ipcMain.handle('get-data-root', () => {
 
 ipcMain.handle('get-recent-data-roots', () => {
   return loadRecentDataRoots();
+});
+
+// Remove one entry from the recent-roots list (does not delete the folder).
+// Returns the updated list.
+ipcMain.handle('remove-recent-data-root', (e, root) => {
+  return removeFromRecentDataRoots(root);
+});
+
+// Window-title project name for the CURRENT root, and per-root nickname editing.
+ipcMain.handle('get-project-name', () => computeProjectName(DATA_ROOT));
+ipcMain.handle('get-root-nicknames', () => loadNicknames());
+ipcMain.handle('set-root-nickname', (e, root, nickname) => {
+  setRootNickname(root, nickname);
+  // If the renamed root is the one currently open, refresh every window's title.
+  if (normalizeRootForCompare(root) === normalizeRootForCompare(DATA_ROOT)) {
+    broadcastProjectName();
+  }
+  return loadNicknames();
 });
 
 // Switch the active data root to `newRoot`. Shared by `select-data-root`

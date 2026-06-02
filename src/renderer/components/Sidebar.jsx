@@ -76,6 +76,24 @@ export default function Sidebar({
   const setSearch = (val) => setSearchByTab((prev) => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] || '') : val }));
   const lowerSearch = search.toLowerCase();
 
+  // Drag a file row past the window edges to spawn / move it into a detached
+  // window. Returns an onDragEnd handler so every draggable row across ALL
+  // sidebar tabs gets the identical gesture — the MODS tab used to omit this,
+  // so files there couldn't be dragged out. Matches the explorer/schema/
+  // favorites rows' inline version.
+  const detachOnDragEnd = (relPath, type) => (e) => {
+    const winX = window.screenX || 0, winY = window.screenY || 0;
+    const winW = window.outerWidth, winH = window.outerHeight;
+    if (e.screenX < winX || e.screenX > winX + winW || e.screenY < winY || e.screenY > winY + winH) {
+      if (window.arcenApi?.detachTabAtPosition) {
+        onOpenFile(relPath, type);
+        setTimeout(() => {
+          window.arcenApi.detachTabAtPosition(relPath, e.screenX, e.screenY);
+        }, 200);
+      }
+    }
+  };
+
   const filteredFolders = folders.filter((f) => {
     if (!search) return true;
     if (f.name.toLowerCase().includes(lowerSearch)) return true;
@@ -873,6 +891,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                       e.dataTransfer.setData('text/arcen-file', f.relativePath);
                       e.dataTransfer.setData('text/arcen-type', fileType(f.relativePath));
                     }}
+                    onDragEnd={detachOnDragEnd(f.relativePath, fileType(f.relativePath))}
                     onClick={() => onOpenFile(f.relativePath, fileType(f.relativePath))}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -962,6 +981,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                             e.dataTransfer.setData('text/arcen-file', schemaEntry.relativePath);
                             e.dataTransfer.setData('text/arcen-type', 'schema');
                           }}
+                          onDragEnd={detachOnDragEnd(schemaEntry.relativePath, 'schema')}
                           onClick={() => onOpenFile(schemaEntry.relativePath, 'schema')}
                           onContextMenu={(e) => {
                             e.preventDefault();
@@ -1000,6 +1020,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                             e.dataTransfer.setData('text/arcen-file', file.relativePath);
                             e.dataTransfer.setData('text/arcen-type', 'xml');
                           }}
+                          onDragEnd={detachOnDragEnd(file.relativePath, 'xml')}
                           onClick={() => onOpenFile(file.relativePath, 'xml')}
                           onContextMenu={(e) => {
                             e.preventDefault();
