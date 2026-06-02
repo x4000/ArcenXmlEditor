@@ -189,6 +189,7 @@ export default function EditorPane({
   const viewRef = useRef(null);
   const schemaRef = useRef(null);
   const restoreScrollTimersRef = useRef([]); // timers from cursor/scroll restore — cleared on navigation
+  const navOverrideRef = useRef(false); // set when a scroll-to-line nav takes over, so the mount-time restore's uncancellable rAF doScroll bails instead of clobbering the navigation target
   const fkIndexRef = useRef(null);
 
   // Overlay state
@@ -252,6 +253,9 @@ export default function EditorPane({
   // Initialize CodeMirror
   useEffect(() => {
     if (!containerRef.current) return;
+    // Fresh mount: clear any nav-override left from a prior mount of this
+    // component instance, so the cursor/scroll restore below is allowed to run.
+    navOverrideRef.current = false;
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
@@ -724,6 +728,12 @@ export default function EditorPane({
         if (scrollLine != null) {
           lastScrollLineRef.current = scrollLine;
           const doScroll = () => {
+            // A scroll-to-line navigation (validation / search / FK / metadata
+            // jump) may have taken over after this restore was scheduled. The
+            // 100/300ms timers are cancelled by the scrollToLine effect, but the
+            // rAF chain above is not — so guard here to avoid scrolling back to
+            // the saved position and clobbering the navigation target.
+            if (navOverrideRef.current) return;
             try {
               const ln = Math.min(scrollLine, view.state.doc.lines);
               const line = view.state.doc.line(ln);
@@ -908,7 +918,9 @@ export default function EditorPane({
     if (scrollToLine != null && viewRef.current) {
       const view = viewRef.current;
       // Cancel any pending cursor/scroll restore timers so they don't override
-      // this navigation at t=100ms / t=300ms after the mount.
+      // this navigation at t=100ms / t=300ms after the mount, and set the
+      // override flag so the restore's uncancellable rAF doScroll bails too.
+      navOverrideRef.current = true;
       for (const t of restoreScrollTimersRef.current) clearTimeout(t);
       restoreScrollTimersRef.current = [];
 
