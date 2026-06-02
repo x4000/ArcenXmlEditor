@@ -12,6 +12,7 @@ import DataRootPicker from './DataRootPicker';
 const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey, composeSchemaForFileLayer } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
+import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps } from '../editor/validation';
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from '../editor/spellcheck';
 import { extractGrammarTargets } from '../editor/grammarTargets';
@@ -1746,76 +1747,13 @@ export default function App() {
 
   // ── FK navigation (Ctrl+click) ──
   const handleNavigateToFK = useCallback((tableName, id) => {
-    const baseName = tableName.replace(/^\d+_/, '');
-    const folder = folders.find((f) => {
-      const fb = f.name.replace(/^\d+_/, '');
-      return fb === baseName || f.name === tableName;
+    navigateToFKRow(tableName, id, {
+      folders,
+      getContent: (p) => allFileContentsRef.current[p],
+      openFile,
+      scrollTo: ({ file, line, highlight }) =>
+        setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-    if (!folder) return;
-
-    // Empty ID = navigate to the table's metadata file (from schema editor)
-    if (!id) {
-      const metaRelPath = folder.metadataRelPath;
-      openFile(metaRelPath, 'schema');
-      return;
-    }
-
-    // Search XML files in this folder for exact ID match
-    for (const xmlFile of folder.xmlFiles) {
-      const content = allFileContentsRef.current[xmlFile.relativePath];
-      if (!content) continue;
-      const pattern = `id="${id}"`;
-      const idx = content.indexOf(pattern);
-      if (idx >= 0) {
-        const line = content.slice(0, idx).split('\n').length;
-        openFile(xmlFile.relativePath, 'xml').then(() => {
-          setPendingScrollLine({ _t: Date.now(), file: xmlFile.relativePath, line, highlight: id });
-        });
-        return;
-      }
-    }
-
-    // No exact match found — find the file with the most similar ID
-    let bestFile = null;
-    let bestId = null;
-    let bestScore = -1;
-    const idLower = id.toLowerCase();
-
-    for (const xmlFile of folder.xmlFiles) {
-      const content = allFileContentsRef.current[xmlFile.relativePath];
-      if (!content) continue;
-      const idRe = /\bid="([^"]*)"/g;
-      let m;
-      while ((m = idRe.exec(content)) !== null) {
-        const candidate = m[1];
-        const cLower = candidate.toLowerCase();
-        // Score by common prefix length
-        let score = 0;
-        for (let i = 0; i < Math.min(idLower.length, cLower.length); i++) {
-          if (idLower[i] === cLower[i]) score++;
-          else break;
-        }
-        // Bonus for substring containment
-        if (cLower.includes(idLower) || idLower.includes(cLower)) score += 50;
-        if (score > bestScore) {
-          bestScore = score;
-          bestFile = xmlFile.relativePath;
-          bestId = candidate;
-        }
-      }
-    }
-
-    if (bestFile) {
-      const content = allFileContentsRef.current[bestFile];
-      const idx = bestId ? content.indexOf(`id="${bestId}"`) : 0;
-      const line = idx >= 0 ? content.slice(0, idx).split('\n').length : 1;
-      openFile(bestFile, 'xml').then(() => {
-        setPendingScrollLine({ _t: Date.now(), file: bestFile, line, highlight: bestId });
-      });
-    } else if (folder.xmlFiles.length > 0) {
-      // Fall back to first file in folder
-      openFile(folder.xmlFiles[0].relativePath, 'xml');
-    }
   }, [folders, openFile]);
 
   // Shadow of what the worker currently has. Updated after every successful
@@ -3027,187 +2965,22 @@ export default function App() {
   // base. Otherwise the folder's primary schema.
   const handleNavigateToMetadata = useCallback((attrName, parentTag) => {
     if (!activeTab) return;
-    const folderName = folderNameOf(activeTab.relativePath);
-    const folder = folders.find((f) => f.name === folderName);
-    if (!folder) return;
-    const sharedRel = dataLayout.sharedMetadataRelPath;
-    const activeLayer = layerByRelPath.get(activeTab.relativePath)?.layer;
-
-    // Mod-extension lookup for this file's mod (if applicable).
-    let extRecord = null;
-    if (activeLayer && activeLayer.startsWith('mod_')) {
-      extRecord = modSchemaExtensionsList.find(
-        (e) => e.modLayer === activeLayer && e.folderName === folderName
-      ) || null;
-    }
-
-    // Build candidate list in priority order, dropping any that don't
-    // exist on disk (folder.metadataRelPath is null for schemaless
-    // folders; sharedRel is null on first run before discovery completes).
-    const candidates = [];
-    if (folder.metadataRelPath) candidates.push(folder.metadataRelPath);
-    if (extRecord && extRecord.metadataRelPath !== folder.metadataRelPath) {
-      candidates.push(extRecord.metadataRelPath);
-    }
-    if (sharedRel) candidates.push(sharedRel);
-
-    // Where to put a FIELD_NEEDED stub if the attribute is absent
-    // everywhere. Mod files default to the mod's extension (created via
-    // "Create partial schema for this mod" if it isn't already there);
-    // otherwise the folder's primary schema. Falls back gracefully if
-    // neither exists.
-    const insertTarget = extRecord
-      ? extRecord.metadataRelPath
-      : folder.metadataRelPath;
-    if (candidates.length === 0 && !insertTarget) return;
-
-    // Search each candidate for the literal `key="<attr>"` pattern. Cheap
-    // and reliable enough — well-formed metadata won't have that string
-    // appearing as part of another attribute's value, since keys are bare
-    // identifiers (no spaces, no quotes). Returns { file, line } or null.
-    const findAttrInCandidate = (relPath) => {
-      const content = allFileContentsRef.current[relPath];
-      if (!content) return null;
-      const idx = content.indexOf(`key="${attrName}"`);
-      if (idx < 0) return null;
-      return { file: relPath, line: content.slice(0, idx).split('\n').length };
-    };
-
-    let hit = null;
-    for (const c of candidates) {
-      hit = findAttrInCandidate(c);
-      if (hit) break;
-    }
-
-    if (hit) {
-      // Open the file that holds the definition AND scroll to it. The
-      // .then ensures the file is the active tab before we set the
-      // pending scroll — the EditorPane only honors pendingScrollLine
-      // when its file matches activeTab.relativePath (see the prop
-      // wiring near the EditorPane mount).
-      openFile(hit.file, 'schema').then(() => {
-        setPendingScrollLine({
-          _t: Date.now(),
-          file: hit.file,
-          line: hit.line,
-          highlight: attrName,
-        });
-      });
-      return;
-    }
-
-    // Not declared anywhere — fall through to FIELD_NEEDED insertion in
-    // the insertTarget file. Open it first so the insert + scroll lands
-    // on the active tab.
-    const metaRelPath = insertTarget;
-    if (!metaRelPath) return;
-    openFile(metaRelPath, 'schema').then(() => {
-      const metaContent = allFileContentsRef.current[metaRelPath];
-      if (!metaContent) return;
-
-      // If a FIELD_NEEDED comment for this attr is already in the
-      // insertion file (from a prior Ctrl+click that hasn't been
-      // resolved yet), jump to it instead of stacking duplicates.
-      const existingFN = metaContent.indexOf(`FIELD_NEEDED: ${attrName}`);
-      if (existingFN >= 0) {
-        const line = metaContent.slice(0, existingFN).split('\n').length;
-        setPendingScrollLine({ _t: Date.now(), file: metaRelPath, line, highlight: attrName });
-        return;
-      }
-
-      const comment = `\t<!--FIELD_NEEDED: ${attrName}-->\n`;
-      const schema = schemas[folderName];
-      const nodeName = schema?.nodeName;
-      const isSubNode = parentTag && parentTag !== nodeName && parentTag !== 'root';
-
-        // Helper: find the end of an attribute node (handles multi-line attributes)
-        function findAttrEnd(content, startIdx) {
-          // An attribute ends with /> or </attribute>
-          let i = startIdx;
-          let inQuote = false;
-          while (i < content.length) {
-            if (content[i] === '"') { inQuote = !inQuote; i++; continue; }
-            if (inQuote) { i++; continue; }
-            if (content[i] === '/' && i + 1 < content.length && content[i + 1] === '>') {
-              // Find the newline after />
-              const nl = content.indexOf('\n', i + 2);
-              return nl >= 0 ? nl + 1 : i + 2;
-            }
-            if (content.startsWith('</attribute>', i)) {
-              const nl = content.indexOf('\n', i + 12);
-              return nl >= 0 ? nl + 1 : i + 12;
-            }
-            i++;
-          }
-          return content.length;
-        }
-
-        let insertPos;
-
-        if (isSubNode) {
-          const subNodePattern = `<sub_node id="${parentTag}"`;
-          const subIdx = metaContent.indexOf(subNodePattern);
-          if (subIdx >= 0) {
-            const closeSubIdx = metaContent.indexOf('</sub_node>', subIdx);
-            if (closeSubIdx >= 0) {
-              // Find last attribute in this sub_node block and insert after it
-              const subBlock = metaContent.slice(subIdx, closeSubIdx);
-              const subAttrRe = /<attribute /g;
-              let lastSubAttrPos = -1;
-              let sm;
-              while ((sm = subAttrRe.exec(subBlock)) !== null) {
-                lastSubAttrPos = subIdx + sm.index;
-              }
-              if (lastSubAttrPos >= 0) {
-                insertPos = findAttrEnd(metaContent, lastSubAttrPos);
-              } else {
-                // No attributes in sub_node yet — insert after the opening tag
-                const gtIdx = metaContent.indexOf('>', subIdx);
-                const nl = metaContent.indexOf('\n', gtIdx);
-                insertPos = nl >= 0 ? nl + 1 : gtIdx + 1;
-              }
-            } else {
-              const gtIdx = metaContent.indexOf('>', subIdx);
-              insertPos = gtIdx >= 0 ? gtIdx + 1 : subIdx + subNodePattern.length;
-            }
-          } else {
-            const rootCloseIdx = metaContent.lastIndexOf('</root>');
-            insertPos = rootCloseIdx >= 0 ? rootCloseIdx : metaContent.length;
-          }
-        } else {
-          // Top-level: find the last attribute before any sub_node and insert after its end
-          const subNodeIdx = metaContent.indexOf('<sub_node');
-          const rootCloseIdx = metaContent.lastIndexOf('</root>');
-          const boundary = subNodeIdx >= 0 ? subNodeIdx : (rootCloseIdx >= 0 ? rootCloseIdx : metaContent.length);
-
-          const attrRe = /\t<attribute /g;
-          let lastAttrStart = -1;
-          let m;
-          while ((m = attrRe.exec(metaContent)) !== null) {
-            if (m.index < boundary) lastAttrStart = m.index;
-          }
-
-          if (lastAttrStart >= 0) {
-            insertPos = findAttrEnd(metaContent, lastAttrStart);
-          } else if (subNodeIdx >= 0) {
-            insertPos = metaContent.lastIndexOf('\n', subNodeIdx);
-            if (insertPos < 0) insertPos = subNodeIdx;
-            else insertPos += 1;
-          } else if (rootCloseIdx >= 0) {
-            insertPos = rootCloseIdx;
-          } else {
-            insertPos = metaContent.length;
-          }
-        }
-
-        const insertContent = metaContent.slice(0, insertPos) + comment + metaContent.slice(insertPos);
-        setFileContents((prev) => ({ ...prev, [metaRelPath]: insertContent }));
-        allFileContentsRef.current[metaRelPath] = insertContent;
-
-        const insertedLine = insertContent.slice(0, insertPos).split('\n').length;
-        setTimeout(() => {
-          setPendingScrollLine({ _t: Date.now(), file: metaRelPath, line: insertedLine, highlight: attrName });
-        }, 100);
+    navigateToMetadataDef(attrName, parentTag, {
+      activeRelPath: activeTab.relativePath,
+      folderNameOf,
+      folders,
+      sharedMetadataRelPath: dataLayout.sharedMetadataRelPath,
+      layerByRelPath,
+      modSchemaExtensions: modSchemaExtensionsList,
+      schemas,
+      getContent: (p) => allFileContentsRef.current[p],
+      setContent: (p, c) => {
+        setFileContents((prev) => ({ ...prev, [p]: c }));
+        allFileContentsRef.current[p] = c;
+      },
+      openFile,
+      scrollTo: ({ file, line, highlight }) =>
+        setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
   }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList, schemas, dataLayout.sharedMetadataRelPath]);
 
@@ -3220,64 +2993,21 @@ export default function App() {
   // file — and insert a stub `<sub_node id="<tag>"></sub_node>` block right
   // before </root>. The user can then add `<attribute>` entries inside.
   const handleAddUnknownSubNodeToSchema = useCallback((tagName) => {
-    if (!activeTab || !tagName) return;
-    const folderName = folderNameOf(activeTab.relativePath);
-    const folder = folders.find((f) => f.name === folderName);
-    if (!folder) return;
-
-    let metaRelPath = folder.metadataRelPath;
-    const activeLayer = layerByRelPath.get(activeTab.relativePath)?.layer;
-    if (activeLayer && activeLayer.startsWith('mod_')) {
-      const ext = modSchemaExtensionsList.find(
-        (e) => e.modLayer === activeLayer && e.folderName === folderName
-      );
-      if (ext) metaRelPath = ext.metadataRelPath;
-    }
-    if (!metaRelPath) {
-      // The folder has data but no schema in any layer (no-schema structural
-      // error). Nowhere to add the sub_node — bail. The user has to create a
-      // schema first (or, for a mod, a partial-schema via the MODS sidebar).
-      alert(`No schema file exists for ${folderName}. Create one before declaring sub-nodes.`);
-      return;
-    }
-
-    openFile(metaRelPath, 'schema').then(() => {
-      const metaContent = allFileContentsRef.current[metaRelPath];
-      if (!metaContent) return;
-
-      // If a sub_node with this id already exists in the file (maybe just
-      // not in the parsed in-memory schema yet, e.g. mid-edit), jump to it
-      // rather than inserting a duplicate.
-      const existingPattern = `<sub_node id="${tagName}"`;
-      const existingIdx = metaContent.indexOf(existingPattern);
-      if (existingIdx >= 0) {
-        const line = metaContent.slice(0, existingIdx).split('\n').length;
-        setPendingScrollLine({ _t: Date.now(), file: metaRelPath, line, highlight: tagName });
-        return;
-      }
-
-      // Build the stub. Tabs match the project's metadata convention (the
-      // _GameEntity.metadata extension uses tabs). The FIELD_NEEDED comment
-      // mirrors the attribute-insertion path so the user notices the empty
-      // block; they replace it with their <attribute> entries.
-      const stub =
-        `\t<sub_node id="${tagName}">\n` +
-        `\t\t<!--FIELD_NEEDED: declare attributes for <${tagName}> here-->\n` +
-        `\t</sub_node>\n`;
-
-      // Insert just before </root>. If no </root> (unclosed mid-edit file),
-      // append at end as a best-effort.
-      const rootCloseIdx = metaContent.lastIndexOf('</root>');
-      const insertPos = rootCloseIdx >= 0 ? rootCloseIdx : metaContent.length;
-      const newContent = metaContent.slice(0, insertPos) + stub + metaContent.slice(insertPos);
-
-      setFileContents((prev) => ({ ...prev, [metaRelPath]: newContent }));
-      allFileContentsRef.current[metaRelPath] = newContent;
-
-      const insertedLine = newContent.slice(0, insertPos).split('\n').length;
-      setTimeout(() => {
-        setPendingScrollLine({ _t: Date.now(), file: metaRelPath, line: insertedLine, highlight: tagName });
-      }, 100);
+    if (!activeTab) return;
+    addUnknownSubNodeStub(tagName, {
+      activeRelPath: activeTab.relativePath,
+      folderNameOf,
+      folders,
+      layerByRelPath,
+      modSchemaExtensions: modSchemaExtensionsList,
+      getContent: (p) => allFileContentsRef.current[p],
+      setContent: (p, c) => {
+        setFileContents((prev) => ({ ...prev, [p]: c }));
+        allFileContentsRef.current[p] = c;
+      },
+      openFile,
+      scrollTo: ({ file, line, highlight }) =>
+        setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
   }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList]);
 

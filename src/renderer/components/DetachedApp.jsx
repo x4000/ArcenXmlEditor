@@ -15,6 +15,7 @@ import GrammarSettings from './GrammarSettings';
 const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
+import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { buildLayerMaps } from '../editor/validation';
 import { validateXMLFile } from '../editor/validation';
 import NSpell from 'nspell';
@@ -38,6 +39,9 @@ export default function DetachedApp({ windowId }) {
   const fkIndexRef = useRef({});
   const lookupSwapsRef = useRef({});
   const foldersRef = useRef([]);
+  // SharedMetaData path — needed by Ctrl+click-to-metadata navigation so it can
+  // search the shared schema for an attribute's declaration.
+  const sharedMetadataRelPathRef = useRef('SharedMetaData.metadata');
   // relativePath → logical folder name. Suite-mode paths carry a layer prefix
   // so the folder can't be derived by splitting on '/'.
   const folderNameByRelPathRef = useRef(new Map());
@@ -111,6 +115,7 @@ export default function DetachedApp({ windowId }) {
         }
       }
       const sharedRel = data.sharedMetadataRelPath || 'SharedMetaData.metadata';
+      sharedMetadataRelPathRef.current = sharedRel;
       if (data.sharedMetadataPath) {
         try { bulk[sharedRel] = await window.arcenApi.readFile(data.sharedMetadataPath); } catch (_) {}
       }
@@ -438,6 +443,59 @@ export default function DetachedApp({ windowId }) {
     return schemasRef.current[folderName] ?? null;
   })();
 
+  // Ctrl+click navigation — same shared implementation the main window uses, so
+  // detached windows are no longer dead-ended on these (they previously wired
+  // these props to empty no-ops, so Ctrl+click on an FK value or attribute name
+  // did nothing). The detached window doesn't track mod schema extensions, so
+  // metadata navigation passes an empty list — base/DLC files are unaffected;
+  // only mod-extension targeting degrades to the folder's primary schema.
+  const handleNavigateToFK = useCallback((tableName, id) => {
+    navigateToFKRow(tableName, id, {
+      folders: foldersRef.current,
+      getContent: (p) => allFileContentsRef.current[p],
+      openFile,
+      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+    });
+  }, [openFile]);
+
+  const handleNavigateToMetadata = useCallback((attrName, parentTag) => {
+    if (!activeTab) return;
+    navigateToMetadataDef(attrName, parentTag, {
+      activeRelPath: activeTab.relativePath,
+      folderNameOf,
+      folders: foldersRef.current,
+      sharedMetadataRelPath: sharedMetadataRelPathRef.current,
+      layerByRelPath,
+      modSchemaExtensions: [],
+      schemas: schemasRef.current,
+      getContent: (p) => allFileContentsRef.current[p],
+      setContent: (p, c) => {
+        setFileContents((prev) => ({ ...prev, [p]: c }));
+        allFileContentsRef.current[p] = c;
+      },
+      openFile,
+      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+    });
+  }, [activeTab, layerByRelPath, openFile]);
+
+  const handleAddUnknownSubNodeToSchema = useCallback((tagName) => {
+    if (!activeTab) return;
+    addUnknownSubNodeStub(tagName, {
+      activeRelPath: activeTab.relativePath,
+      folderNameOf,
+      folders: foldersRef.current,
+      layerByRelPath,
+      modSchemaExtensions: [],
+      getContent: (p) => allFileContentsRef.current[p],
+      setContent: (p, c) => {
+        setFileContents((prev) => ({ ...prev, [p]: c }));
+        allFileContentsRef.current[p] = c;
+      },
+      openFile,
+      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+    });
+  }, [activeTab, layerByRelPath, openFile]);
+
   const toggleTheme = () => {
     setTheme(t => {
       const next = t === 'light' ? 'dark' : 'light';
@@ -636,9 +694,11 @@ export default function DetachedApp({ windowId }) {
                 onChange={updateContent}
                 theme={theme}
                 fkIndex={fkIndexRef.current}
-                onNavigateToFK={() => {}}
-                onNavigateToMetadata={() => {}}
+                onNavigateToFK={handleNavigateToFK}
+                onNavigateToMetadata={handleNavigateToMetadata}
+                onAddUnknownSubNodeToSchema={handleAddUnknownSubNodeToSchema}
                 scrollToLine={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.line : null}
+                scrollHighlight={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.highlight : null}
                 onScrolled={() => setPendingScrollLine(null)}
                 editorViewRef={editorViewRef}
                 localSearchStateRef={localSearchStateRef}
