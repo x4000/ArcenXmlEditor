@@ -3339,7 +3339,10 @@ export default function App() {
           >
             <div
               style={{
-                position: 'absolute', bottom: -6, left: 0, right: 0, height: 12,
+                // Sit entirely below the editor/search boundary, over the panel's
+                // 2px accent border + 8px top padding (no controls until 10px down),
+                // so the editor's 10px horizontal scrollbar above stays fully grabbable.
+                position: 'absolute', bottom: -10, left: 0, right: 0, height: 10,
                 cursor: 'row-resize', zIndex: 20,
               }}
               onMouseDown={(e) => {
