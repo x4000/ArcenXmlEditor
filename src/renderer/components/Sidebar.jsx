@@ -5,6 +5,47 @@ import { clampToViewport } from '../editor/menuUtils';
 import { stripDataExt, fileDisplayName } from '../editor/layerDisplay';
 const vcsStore = require('../editor/vcsStore');
 
+// Catches render-time exceptions in the sidebar's tab content (FileTree /
+// SchemaList / ModsList / FavoritesList) and shows the error + component stack
+// IN PLACE, instead of letting it unmount the whole React tree to a white
+// screen (which is what a HotM mods-tab render throw would otherwise do — and
+// renderer throws never reach the terminal, only DevTools). Keyed on the active
+// tab so switching tabs resets it.
+class SidebarErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null, info: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    this.setState({ info });
+    console.error('[Sidebar crash]', error, info && info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      const e = this.state.error;
+      return (
+        <div style={{ padding: 10, fontSize: 11, color: 'var(--text)', overflow: 'auto', height: '100%' }}>
+          <div style={{ fontWeight: 700, color: '#c5384c', marginBottom: 6 }}>
+            Sidebar render error{this.props.label ? ` (${this.props.label} tab)` : ''} — caught
+          </div>
+          <pre style={{ whiteSpace: 'pre-wrap', userSelect: 'text', margin: 0 }}>
+            {String((e && (e.stack || e.message)) || e)}
+          </pre>
+          {this.state.info && this.state.info.componentStack && (
+            <pre style={{ whiteSpace: 'pre-wrap', userSelect: 'text', margin: '8px 0 0', color: 'var(--text-dim)' }}>
+              {this.state.info.componentStack}
+            </pre>
+          )}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // Find which mod (and which folder under it) "owns" a given relativePath for
 // MODS-tab navigation. A path can land in one of three positions inside the
 // MODS tree:
@@ -248,6 +289,7 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-content" ref={contentRef}>
+        <SidebarErrorBoundary key={activeTab} label={activeTab}>
         {activeTab === 'files' && (
           <FileTree
             folders={filteredFolders}
@@ -316,9 +358,11 @@ export default function Sidebar({
             onRenameFile={onRenameFile}
             onCreateXmlFile={onCreateXmlFile}
             onCreateFolder={onCreateFolder}
+            detachOnDragEnd={detachOnDragEnd}
             modSchemaExtensions={modSchemaExtensions}
           />
         )}
+        </SidebarErrorBoundary>
       </div>
 
       {/* Sidebar context menu */}
@@ -756,7 +800,7 @@ function SchemaList({ folders, onOpenFile, activeFile, modifiedFiles, search, ha
 // Mods and their inner folders share the parent's `expandedFolders` Set, but
 // using a prefixed key (`mods:<layerId>` / `mods:<layerId>/<folderName>`)
 // to avoid collisions with regular table-folder names.
-function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, modSchemaExtensions = [] }) {
+function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, detachOnDragEnd, modSchemaExtensions = [] }) {
   const vcs = useVcsStatus();
 
   // Lookup: (layerId, folderName) → extension record. Lets us surface a mod's
