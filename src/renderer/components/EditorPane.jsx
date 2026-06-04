@@ -1166,7 +1166,10 @@ export default function EditorPane({
             >
               <div
                 style={{
-                  position: 'absolute', top: -6, left: 0, right: 0, height: 12,
+                  // Sit entirely below the reference-panel/editor boundary so the
+                  // reference panel's 10px horizontal scrollbar above stays fully
+                  // grabbable (mirror of the global-search handle fix in App.jsx).
+                  position: 'absolute', top: 0, left: 0, right: 0, height: 10,
                   cursor: 'row-resize', zIndex: 20,
                 }}
                 onMouseDown={(e) => {
