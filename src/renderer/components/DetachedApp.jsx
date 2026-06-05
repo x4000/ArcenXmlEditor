@@ -66,6 +66,14 @@ export default function DetachedApp({ windowId }) {
   const localSearchStateRef = useRef(null);
   const recentSavesRef = useRef(new Set());
   const sessionLoadedRef = useRef(false);
+  // Current tabs, read by once-registered IPC handlers without re-subscribing.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activeTabIndexRef = useRef(activeTabIndex);
+  activeTabIndexRef.current = activeTabIndex;
+  // Activation history (relativePaths, most-recent LAST) so tearing out the
+  // active tab can fall back to the tab the user was on before it.
+  const activationHistoryRef = useRef([]);
   const [spellchecker, setSpellchecker] = useState(null);
   const spellcheckerRef = useRef(null);
 
@@ -249,6 +257,11 @@ export default function DetachedApp({ windowId }) {
   }, []);
 
   // ── Tab added/removed by main process (drag between windows) ──
+  // Registered ONCE (empty deps) and reads current tabs/active index through
+  // refs. Re-registering on every `tabs` change used to stack duplicate
+  // listeners (preload's on* now also clears prior handlers), and each stale
+  // copy fired its own activeTabIndex update — which is what left the window
+  // blank after dragging a tab out.
   useEffect(() => {
     const norm = (p) => (typeof p === 'string' ? p.replace(/\\/g, '/') : p);
     window.arcenApi.onTabAdded(async (raw) => {
@@ -256,43 +269,63 @@ export default function DetachedApp({ windowId }) {
       const content = await window.arcenApi.readFile(relativePath);
       const type = relativePath.endsWith('.metadata') ? 'schema' : 'xml';
       setTabs(prev => {
-        if (prev.some(t => t.relativePath === relativePath)) return prev;
-        return [...prev, { relativePath, type }];
+        const dup = prev.findIndex(t => t.relativePath === relativePath);
+        if (dup >= 0) { setActiveTabIndex(dup); return prev; }
+        const next = [...prev, { relativePath, type }];
+        setActiveTabIndex(next.length - 1); // focus the newly added tab
+        return next;
       });
       setFileContents(prev => ({ ...prev, [relativePath]: content }));
       setSavedContents(prev => ({ ...prev, [relativePath]: content }));
-      setActiveTabIndex(prev => tabs.length); // will be the new last tab
       syncTabs();
     });
 
     window.arcenApi.onTabRemoved((raw) => {
       const relativePath = norm(raw);
       setTabs(prev => {
+        const removedIdx = prev.findIndex(t => t.relativePath === relativePath);
+        if (removedIdx < 0) return prev;
         const filtered = prev.filter(t => t.relativePath !== relativePath);
+        if (filtered.length === 0) { setActiveTabIndex(-1); return filtered; }
+        setActiveTabIndex(curIdx => {
+          const curPath = prev[curIdx]?.relativePath;
+          // A non-active tab was removed → keep the current tab selected.
+          if (curPath && curPath !== relativePath) {
+            const ni = filtered.findIndex(t => t.relativePath === curPath);
+            if (ni >= 0) return ni;
+          }
+          // The active tab was torn out → fall back to the most recently
+          // active surviving tab (activation history, newest last), then to
+          // the last tab in the list.
+          const hist = activationHistoryRef.current;
+          for (let i = hist.length - 1; i >= 0; i--) {
+            if (hist[i] === relativePath) continue;
+            const ni = filtered.findIndex(t => t.relativePath === hist[i]);
+            if (ni >= 0) return ni;
+          }
+          return filtered.length - 1;
+        });
         return filtered;
       });
-      setActiveTabIndex(prev => Math.min(prev, tabs.length - 2));
+      activationHistoryRef.current = activationHistoryRef.current.filter(p => p !== relativePath);
       syncTabs();
     });
 
     window.arcenApi.onFocusTab((raw) => {
       const relativePath = norm(raw);
-      setTabs(prev => {
-        const idx = prev.findIndex(t => t.relativePath === relativePath);
-        if (idx >= 0) setActiveTabIndex(idx);
-        return prev;
-      });
+      const idx = tabsRef.current.findIndex(t => t.relativePath === relativePath);
+      if (idx >= 0) setActiveTabIndex(idx);
     });
 
     window.arcenApi.onNavigateToLine((rawFile, line) => {
       const file = norm(rawFile);
-      const idx = tabs.findIndex(t => t.relativePath === file);
+      const idx = tabsRef.current.findIndex(t => t.relativePath === file);
       if (idx >= 0) {
         setActiveTabIndex(idx);
         setPendingScrollLine({ file, line });
       }
     });
-  }, [tabs]);
+  }, []);
 
   // ── File watcher ──
   // Registered once; uses latest-state refs instead of re-running the effect
@@ -451,11 +484,31 @@ export default function DetachedApp({ windowId }) {
     const tab = tabs[activeTabIndex];
     if (tab) {
       window.arcenApi.focusSidebarOnFile(tab.relativePath);
+      // Feed the cross-window "center on active" target (main window's
+      // filter-cleared behavior reads this).
+      window.arcenApi.reportActiveFile?.(tab.relativePath);
+      // Record in MRU history (newest last, no duplicates) so a torn-out
+      // active tab can fall back to the previously focused one.
+      const h = activationHistoryRef.current.filter(p => p !== tab.relativePath);
+      h.push(tab.relativePath);
+      activationHistoryRef.current = h;
     }
     if (activeTabIndex >= 0) {
       window.arcenApi.setDetachedActiveTab(activeTabIndex);
     }
   }, [activeTabIndex, tabs]);
+
+  // Report this window's active file whenever it regains focus, so the
+  // "center on active" target reflects the window the user last worked in
+  // even if they didn't switch tabs while here.
+  useEffect(() => {
+    const onFocus = () => {
+      const tab = tabsRef.current[activeTabIndexRef.current];
+      if (tab) window.arcenApi.reportActiveFile?.(tab.relativePath);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   // No beforeunload needed — EditorPane's scroll tracking keeps the central
   // registry current, and main process saves everything on close.
@@ -594,17 +647,12 @@ export default function DetachedApp({ windowId }) {
       }
     }
 
-    // Sidebar centering — drives the main window's sidebar via the existing
-    // focus-sidebar-on-file IPC, now extended with a mode parameter.
-    if (isXml) {
-      items.push({ label: 'Center explorer sidebar on this', action: () => {
-        window.arcenApi.focusSidebarOnFile?.(tab.relativePath, 'files');
-      }});
-    } else {
-      items.push({ label: 'Center schema sidebar on this', action: () => {
-        window.arcenApi.focusSidebarOnFile?.(tab.relativePath, 'schema');
-      }});
-    }
+    // Sidebar centering — drives the main window's sidebar via the
+    // focus-sidebar-on-file IPC. The main window picks the right tab (MODS vs
+    // Explorer) from the file's layer, so xml and schema share one action.
+    items.push({ label: 'Center sidebar on this', action: () => {
+      window.arcenApi.focusSidebarOnFile?.(tab.relativePath, { highlight: true });
+    }});
 
     items.push({ label: 'Open in Explorer', action: () => {
       if (window.arcenApi?.scAbsPath && window.arcenApi?.showInFolder) {
@@ -627,6 +675,27 @@ export default function DetachedApp({ windowId }) {
       });
       syncTabs();
     }});
+    if (tab.type === 'schema') {
+      items.push({ label: 'Close All Schema Tabs', action: () => {
+        setTabs(prev => {
+          const schemaTabs = prev.filter(t => t.type === 'schema');
+          if (!schemaTabs.length) return prev;
+          const anyModified = schemaTabs.some(t => fileContents[t.relativePath] !== savedContents[t.relativePath]);
+          if (anyModified && !confirm('Some schema tabs have unsaved changes. Close all anyway?')) return prev;
+          const kept = prev.filter(t => t.type !== 'schema');
+          setActiveTabIndex(curIdx => {
+            const curTab = prev[curIdx];
+            if (curTab && curTab.type !== 'schema') {
+              const ni = kept.findIndex(t => t.relativePath === curTab.relativePath);
+              return ni >= 0 ? ni : 0;
+            }
+            return kept.length ? 0 : -1;
+          });
+          return kept;
+        });
+        syncTabs();
+      }});
+    }
 
     // VCS commands, mirroring App.jsx — appended async after the menu opens.
     if (vcsStore.getState().statusBackendLive && window.arcenApi?.scRunCommand && window.arcenApi?.scAbsPath && window.arcenApi?.scGetCommands) {
@@ -743,6 +812,7 @@ export default function DetachedApp({ windowId }) {
                 onNavigateToFK={handleNavigateToFK}
                 onNavigateToMetadata={handleNavigateToMetadata}
                 onAddUnknownSubNodeToSchema={handleAddUnknownSubNodeToSchema}
+                onCursorFocusFile={(rp) => window.arcenApi.focusSidebarOnFile?.(rp)}
                 scrollToLine={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.line : null}
                 scrollHighlight={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.highlight : null}
                 onScrolled={() => setPendingScrollLine(null)}

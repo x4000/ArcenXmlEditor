@@ -130,6 +130,8 @@ function arcenCompletionSource(getSchema, onFKComplete) {
           const def = findAttrDef(schema, label);
           const isBool = def && (def.type === 'bool' || def.type === 'int-bool');
           const isFK = def && (def.type === 'node-dropdown' || def.type === 'node-list');
+          // string-dropdown opens the same picker as FK after completion.
+          const isStringDropdown = def && def.type === 'string-dropdown';
           const defaultVal = isBool ? (def.type === 'bool' ? 'true' : '1') : '';
 
           return {
@@ -151,8 +153,8 @@ function arcenCompletionSource(getSchema, onFKComplete) {
                   changes: { from, to, insert },
                   selection: { anchor: cursorPos },
                 });
-                // If FK, trigger dropdown
-                if (isFK && onFKComplete) {
+                // If FK or string-dropdown, trigger the picker.
+                if ((isFK || isStringDropdown) && onFKComplete) {
                   setTimeout(() => onFKComplete(view, def, cursorPos), 20);
                 }
               }

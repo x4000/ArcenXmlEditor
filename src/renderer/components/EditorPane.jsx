@@ -167,6 +167,7 @@ export default function EditorPane({
   onNavigateToFK,
   onNavigateToMetadata,
   onAddUnknownSubNodeToSchema,
+  onCursorFocusFile,
   scrollToLine,
   scrollHighlight,
   scrollToken,
@@ -222,6 +223,22 @@ export default function EditorPane({
   relativePathRef.current = relativePath;
   const isSchemaRef = useRef(isSchema);
   isSchemaRef.current = isSchema;
+  // Called on a left-click in the editor so the host can center the sidebar on
+  // this file (as if its tab header was clicked). Held in a ref so the CM
+  // mousedown handler installed at mount always sees the latest callback.
+  const onCursorFocusRef = useRef(null);
+  onCursorFocusRef.current = onCursorFocusFile;
+  // Navigation callbacks change identity when the host's tabs/activeTab change
+  // (openFile/handleNavigateToMetadata depend on them), but the CM click handler
+  // is built once per mount. Route through refs so ctrl+click always calls the
+  // CURRENT handler — otherwise, opening another tab in a detached window left
+  // the editor calling a stale closure and ctrl+click silently stopped working.
+  const onNavigateToFKRef = useRef(null);
+  onNavigateToFKRef.current = onNavigateToFK;
+  const onNavigateToMetadataRef = useRef(null);
+  onNavigateToMetadataRef.current = onNavigateToMetadata;
+  const onAddUnknownSubNodeToSchemaRef = useRef(null);
+  onAddUnknownSubNodeToSchemaRef.current = onAddUnknownSubNodeToSchema;
 
   const fileLayerRef = useRef('base');
   fileLayerRef.current = fileLayer || 'base';
@@ -299,16 +316,16 @@ export default function EditorPane({
         setColorPicker({ view, attr, x, y });
       },
       navigateToFK: (tableName, id) => {
-        if (onNavigateToFK) onNavigateToFK(tableName, id);
+        if (onNavigateToFKRef.current) onNavigateToFKRef.current(tableName, id);
       },
       navigateToMetadata: (attrName, parentTag) => {
-        if (onNavigateToMetadata) onNavigateToMetadata(attrName, parentTag);
+        if (onNavigateToMetadataRef.current) onNavigateToMetadataRef.current(attrName, parentTag);
       },
       // Ctrl+click on a tag that ISN'T in the schema yet — let the host add
       // a sub_node declaration in the right schema/extension file (the host
       // knows about layers and extensions; clickHandler.js doesn't).
       addUnknownSubNodeToSchema: (tagName) => {
-        if (onAddUnknownSubNodeToSchema) onAddUnknownSubNodeToSchema(tagName);
+        if (onAddUnknownSubNodeToSchemaRef.current) onAddUnknownSubNodeToSchemaRef.current(tagName);
       },
       showTooltip: (text, x, y) => {
         setTooltip({ text, x, y });
@@ -488,6 +505,17 @@ export default function EditorPane({
       createArcenInputHandlers(),
       searchSyncListener,
       updateListener,
+      // Left-click in the editor → ask the host to center the sidebar on this
+      // file. Never consumes the event, so cursor placement / selection still
+      // happen normally.
+      EditorView.domEventHandlers({
+        mousedown: (event) => {
+          if (event.button === 0) {
+            try { onCursorFocusRef.current?.(relativePathRef.current); } catch (_) {}
+          }
+          return false;
+        },
+      }),
       ...createChangeGutter(),
       EditorView.theme({
         '&': { height: '100%' },
@@ -547,6 +575,16 @@ export default function EditorPane({
                   });
                 }
               }
+            }
+          } else if (def.type === 'string-dropdown' && Array.isArray(def.options) && def.options.length) {
+            // string-dropdown completed — open the same picker with the
+            // schema-defined options, in definition order.
+            const coords = view.coordsAtPos(valuePos);
+            if (coords) {
+              setDropdown({
+                view, attr: { vs: valuePos, ve: valuePos, v: '', src: null },
+                options: def.options.slice(), x: coords.left, y: coords.bottom,
+              });
             }
           }
         }),

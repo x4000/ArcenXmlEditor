@@ -528,6 +528,13 @@ html, body, #root {
   background: var(--scrollbar-track);
 }
 
+/* Main editor (and reference panel) scrollbars — 50% thicker than the global
+   10px. They're easy to miss otherwise, and the horizontal one gets heavy use. */
+.cm-scroller::-webkit-scrollbar {
+  width: 15px;
+  height: 15px;
+}
+
 /* Spellcheck error decoration — red wavy underline, no color change */
 .cm-spelling-error {
   text-decoration: wavy underline red;

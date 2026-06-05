@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('arcenApi', {
     );
   },
   onNavigateToLine: (callback) => {
+    ipcRenderer.removeAllListeners('navigate-to-line');
     ipcRenderer.on('navigate-to-line', (_event, file, line, highlight, absPos) =>
       callback(file, line, highlight, absPos)
     );
@@ -164,7 +165,17 @@ contextBridge.exposeInMainWorld('arcenApi', {
   detachTabAtPosition: (relativePath, screenX, screenY) =>
     ipcRenderer.invoke('detach-tab-at-position', relativePath, screenX, screenY),
   registerWindowTabs: (tabs) => ipcRenderer.invoke('register-window-tabs', tabs),
-  focusSidebarOnFile: (relativePath, mode) => ipcRenderer.invoke('focus-sidebar-on-file', relativePath, mode),
+  focusSidebarOnFile: (relativePath, opts) => ipcRenderer.invoke('focus-sidebar-on-file', relativePath, opts),
+  // Report this window's currently-active file so the main window can later
+  // "center on the active tab" using whichever window was focused most recently.
+  reportActiveFile: (relativePath) => ipcRenderer.send('report-active-file', relativePath),
+  getCenterTarget: () => ipcRenderer.invoke('get-center-target'),
+  // Union of every live window's active file, for the main sidebar's highlight.
+  getActiveFiles: () => ipcRenderer.invoke('get-active-files'),
+  onActiveFilesChanged: (callback) => {
+    ipcRenderer.removeAllListeners('active-files-changed');
+    ipcRenderer.on('active-files-changed', (_event, files) => callback(files));
+  },
   updateFavorites: (favorites) => ipcRenderer.invoke('update-favorites', favorites),
   findWindowForTab: (relativePath) => ipcRenderer.invoke('find-window-for-tab', relativePath),
   getDetachedSession: () => ipcRenderer.invoke('get-detached-session'),
@@ -172,19 +183,28 @@ contextBridge.exposeInMainWorld('arcenApi', {
   onDetachedDisplayNumChanged: (callback) => {
     ipcRenderer.on('detached-display-num', (_event, n) => callback(n));
   },
+  // These five channels are (re)subscribed from React effects. Clear any prior
+  // handler first so a re-registration replaces rather than stacks listeners —
+  // duplicate handlers firing with stale closures is what blanked a detached
+  // window after dragging a tab out.
   onTabRemoved: (callback) => {
+    ipcRenderer.removeAllListeners('tab-removed');
     ipcRenderer.on('tab-removed', (_event, relativePath) => callback(relativePath));
   },
   onTabAdded: (callback) => {
+    ipcRenderer.removeAllListeners('tab-added');
     ipcRenderer.on('tab-added', (_event, relativePath) => callback(relativePath));
   },
   onFocusSidebarOnFile: (callback) => {
-    ipcRenderer.on('focus-sidebar-on-file', (_event, relativePath, mode) => callback(relativePath, mode));
+    ipcRenderer.removeAllListeners('focus-sidebar-on-file');
+    ipcRenderer.on('focus-sidebar-on-file', (_event, relativePath, opts) => callback(relativePath, opts));
   },
   onUpdateFavorites: (callback) => {
+    ipcRenderer.removeAllListeners('update-favorites');
     ipcRenderer.on('update-favorites', (_event, favorites) => callback(favorites));
   },
   onFocusTab: (callback) => {
+    ipcRenderer.removeAllListeners('focus-tab');
     ipcRenderer.on('focus-tab', (_event, relativePath) => callback(relativePath));
   },
 

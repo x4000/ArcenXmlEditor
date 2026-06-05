@@ -90,15 +90,19 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
       for (const attr of attrMap) {
         // Click on VALUE
         if (pos >= attr.vs && pos <= attr.ve) {
-          // Ctrl+click FK navigation
-          if ((event.ctrlKey || event.metaKey) && attr.src && callbacks.navigateToFK) {
+          // Ctrl+click FK navigation. Require a clean SINGLE click
+          // (event.detail === 1): a double-click whose second click lands with
+          // Ctrl already held would otherwise navigate away instead of letting
+          // the user select-a-word-then-Ctrl+V. Same guard on every ctrl+click
+          // branch below.
+          if ((event.ctrlKey || event.metaKey) && event.detail === 1 && attr.src && callbacks.navigateToFK) {
             event.preventDefault();
             callbacks.navigateToFK(attr.src, attr.v);
             return true;
           }
 
           // Ctrl+click lang-string — navigate to Language table entry
-          if ((event.ctrlKey || event.metaKey) && attr.tp === 'lang-string' && attr.v && callbacks.navigateToFK) {
+          if ((event.ctrlKey || event.metaKey) && event.detail === 1 && attr.tp === 'lang-string' && attr.v && callbacks.navigateToFK) {
             event.preventDefault();
             callbacks.navigateToFK('0_Language', attr.v);
             return true;
@@ -173,13 +177,33 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
             return false;
           }
 
+          // string-dropdown — open a filterable picker of the schema-defined
+          // options, in definition order (NOT sorted). Same delayed-open as the
+          // FK dropdown so a double-click word-select still works, and the
+          // FKDropdown UI gives the type-to-filter behavior.
+          if (attr.tp === 'string-dropdown' && callbacks.openDropdown) {
+            if (event.detail >= 2) return false;
+            const options = Array.isArray(attr.d?.options) ? attr.d.options.slice() : [];
+            if (!options.length) return false;
+            if (fkClickTimer) clearTimeout(fkClickTimer);
+            const cx = event.clientX, cy = event.clientY;
+            const attrCopy = { ...attr };
+            fkClickTimer = setTimeout(() => {
+              fkClickTimer = null;
+              const sel = view.state.selection.main;
+              if (sel.from !== sel.to) return;
+              callbacks.openDropdown(view, attrCopy, options, cx, cy);
+            }, 250);
+            return false;
+          }
+
           return false;
         }
 
         // Click on NAME
         if (pos >= attr.ns2 && pos < attr.ne) {
           // Ctrl+click attribute name → navigate to metadata definition
-          if ((event.ctrlKey || event.metaKey) && callbacks.navigateToMetadata) {
+          if ((event.ctrlKey || event.metaKey) && event.detail === 1 && callbacks.navigateToMetadata) {
             event.preventDefault();
             callbacks.navigateToMetadata(attr.nm, attr.parentTag || null);
             return true;
@@ -208,7 +232,7 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
       //     entry in the appropriate schema/extension file (so the mod author
       //     can declare the sub-node their DLL reads without leaving the
       //     editor). Split view for an unknown node would just be empty.
-      if ((event.ctrlKey || event.metaKey)) {
+      if ((event.ctrlKey || event.metaKey) && event.detail === 1) {
         for (const tk of tokens) {
           if (tk.c === 'tg' && pos >= tk.p && pos < tk.p + tk.s.length) {
             // Known if it matches the root node, any sub_node id in the

@@ -538,9 +538,18 @@ function safeBoundsForSave(win) {
 }
 
 // ─── Multi-Window Registry ──────────────────────────────────────────
-// windowId → { browserWindow, tabs: [relativePath] }
+// windowId → { browserWindow, tabs: [relativePath], activeFile? }
 const windowRegistry = new Map();
 let detachedCounter = 0;
+
+// The file the user most recently worked with across ALL windows, used by the
+// main window's "center sidebar on the active tab when the filter clears"
+// behavior. Updated when any window reports a tab activation, and when a
+// detached window regains focus (so merely returning to a detached window the
+// user was last in points the target there). Focusing the MAIN window does NOT
+// overwrite it — otherwise reaching over to the main window's filter box would
+// always clobber the detached file the user was actually editing.
+let lastActiveFileGlobal = null;
 
 // ─── Central File State Registry ────────────────────────────────────
 // relativePath → { cursor, scrollLine, refPanel: { open, height, scrollLine } | null }
@@ -684,10 +693,15 @@ function createDetachedWindow(windowId, tabPaths, x, y, width, height) {
       // Re-rank the remaining detached windows so their titles count
       // 1..N with no gaps.
       renumberDetachedWindows();
+      // The closed window's active file should no longer be highlighted.
+      broadcastActiveFiles();
     }
   });
 
   win.on('focus', () => {
+    // Returning to a detached window makes its active file the "center" target.
+    const entry = windowRegistry.get(windowId);
+    if (entry && entry.activeFile) lastActiveFileGlobal = entry.activeFile;
     if (Date.now() - lastSaveTime < 3000) return;
     checkForChangedFiles();
   });
@@ -1834,13 +1848,51 @@ ipcMain.handle('register-window-tabs', (event, tabs) => {
   }
 });
 
-ipcMain.handle('focus-sidebar-on-file', (_event, relativePath, mode) => {
-  // mode is optional: 'files' | 'schema'. Detached windows pass it from
-  // their tab context menu's "Center explorer/schema sidebar on this" so
-  // the main window switches tab + expands + scrolls. Without mode this
-  // is the original passive behavior (used on every detached tab change).
+// Push the union of every live window's active file to the main window, so its
+// sidebar can highlight the tab that's "facing the user" in EACH open window
+// (main + every detached), not just its own.
+function broadcastActiveFiles() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const files = [];
+  for (const entry of windowRegistry.values()) {
+    if (entry.activeFile) files.push(entry.activeFile);
+  }
+  mainWindow.webContents.send('active-files-changed', [...new Set(files)]);
+}
+
+// A window reports its currently-active file. Stored per-window (so a detached
+// window's focus can re-select it) and as the global most-recent target.
+ipcMain.on('report-active-file', (event, relativePath) => {
+  const id = getWindowIdForWebContents(event.sender);
+  if (id) {
+    const entry = windowRegistry.get(id);
+    if (entry) entry.activeFile = relativePath;
+  }
+  if (relativePath) lastActiveFileGlobal = relativePath;
+  broadcastActiveFiles();
+});
+
+// The set of all live windows' active files (for the main sidebar's highlight).
+ipcMain.handle('get-active-files', () => {
+  const files = [];
+  for (const entry of windowRegistry.values()) {
+    if (entry.activeFile) files.push(entry.activeFile);
+  }
+  return [...new Set(files)];
+});
+
+// The file the main window's sidebar should center on when its filter clears.
+ipcMain.handle('get-center-target', () => {
+  return lastActiveFileGlobal || windowRegistry.get('main')?.activeFile || null;
+});
+
+ipcMain.handle('focus-sidebar-on-file', (_event, relativePath, opts) => {
+  // opts is optional: { highlight } — a detached window's deliberate "Center
+  // sidebar on this" passes highlight:true to flash the row; the passive sync
+  // on detached tab-switch / editor click passes nothing (no flash). The main
+  // window picks the right sidebar tab from the file's layer either way.
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('focus-sidebar-on-file', relativePath, mode);
+    mainWindow.webContents.send('focus-sidebar-on-file', relativePath, opts);
   }
 });
 

@@ -6,7 +6,7 @@ import { stripDataExt, fileDisplayName } from '../editor/layerDisplay';
 const vcsStore = require('../editor/vcsStore');
 
 // Catches render-time exceptions in the sidebar's tab content (FileTree /
-// SchemaList / ModsList / FavoritesList) and shows the error + component stack
+// ModsList / FavoritesList) and shows the error + component stack
 // IN PLACE, instead of letting it unmount the whole React tree to a white
 // screen (which is what a HotM mods-tab render throw would otherwise do — and
 // renderer throws never reach the terminal, only DevTools). Keyed on the active
@@ -88,6 +88,7 @@ export default function Sidebar({
   onToggleFolder,
   onOpenFile,
   activeFile,
+  activeFiles = [],
   modifiedFiles,
   schemas,
   hasSharedMetadata,
@@ -103,6 +104,7 @@ export default function Sidebar({
   expansions = [],
   mods = [],
   modSchemaExtensions = [],
+  onRequestCenterActive,
 }) {
   const [searchByTab, setSearchByTab] = useState({ files: '', favorites: '', schema: '' });
   const [searchFilesByTab, setSearchFilesByTab] = useState({ files: true, mods: true });
@@ -126,6 +128,31 @@ export default function Sidebar({
   const setSearch = (val) => setSearchByTab((prev) => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] || '') : val }));
   const lowerSearch = search.toLowerCase();
 
+  // Every open window (main + each detached) has one tab "facing the user";
+  // all of them get the .active highlight in the sidebar. activeFile is this
+  // window's own active tab; activeFiles is the union across all windows.
+  const activeFileSet = useMemo(
+    () => new Set([...(activeFiles || []), activeFile].filter(Boolean)),
+    [activeFiles, activeFile]
+  );
+
+  // When the Explorer filter goes from non-empty back to empty — whether by
+  // backspacing it out or hitting the ✕ clear button — re-center the sidebar on
+  // the active tab. Gated to the Explorer tab and to the SAME tab staying
+  // selected, so merely switching sidebar tabs (each keeps its own query)
+  // doesn't trigger a center.
+  const prevSearchRef = useRef(search);
+  const prevTabRef = useRef(activeTab);
+  useEffect(() => {
+    const prev = prevSearchRef.current;
+    const prevTab = prevTabRef.current;
+    prevSearchRef.current = search;
+    prevTabRef.current = activeTab;
+    if (activeTab === 'files' && prevTab === activeTab && prev && !search) {
+      onRequestCenterActive?.();
+    }
+  }, [search, activeTab]);
+
   // Drag a file row past the window edges to spawn / move it into a detached
   // window. Returns an onDragEnd handler so every draggable row across ALL
   // sidebar tabs gets the identical gesture — the MODS tab used to omit this,
@@ -144,19 +171,12 @@ export default function Sidebar({
     }
   };
 
-  const filteredFolders = folders.filter((f) => {
-    if (!search) return true;
-    if (searchFolders && f.name.toLowerCase().includes(lowerSearch)) return true;
-    if (searchFiles && f.xmlFiles.some((x) => x.name.toLowerCase().includes(lowerSearch))) return true;
-    return false;
-  });
-
   // Scroll the active file into view. Strategy depends on which tab is
   // active: the explorer tab uses a virtualized list, so we compute the
   // target row index and set scrollTop directly (the row DOM may not exist
-  // yet). Schema and Favorites render every row in the DOM, so a direct
-  // scrollIntoView works there — and is what the tab-right-click "Center
-  // schema sidebar on this" action relies on.
+  // yet). Favorites renders every row in the DOM, so a direct scrollIntoView
+  // works there — and is what the tab-right-click "Center sidebar on this"
+  // action relies on.
   const scrollFileIntoView = (targetPath, highlight = false) => {
     if (!targetPath || !contentRef.current) return;
 
@@ -200,42 +220,33 @@ export default function Sidebar({
                      contentRef.current.querySelector('.sidebar-content');
     if (!scrollEl) return;
 
-    // Compute target row index by scanning folders/files in the same order as FileTree
-    let index = 0;
-    for (const folder of folders) {
-      const folderNameMatches = lowerSearch && searchFolders && folder.name.toLowerCase().includes(lowerSearch);
-      const filteredFiles = lowerSearch
-        ? (folderNameMatches
-            ? folder.xmlFiles
-            : searchFiles
-              ? folder.xmlFiles.filter((f) => f.name.toLowerCase().includes(lowerSearch))
-              : [])
-        : folder.xmlFiles;
-      const isExpanded = lowerSearch ? true : expandedFolders.has(folder.name);
-      index++; // folder header
-      if (isExpanded) {
-        for (const file of filteredFiles) {
-          if (file.relativePath === targetPath) {
-            const ROW_H = 24;
-            const targetY = index * ROW_H;
-            const viewH = scrollEl.clientHeight;
-            scrollEl.scrollTop = Math.max(0, targetY - viewH / 2 + ROW_H / 2);
-            if (highlight) {
-              // Try to find the DOM element (it should be rendered after scroll)
-              setTimeout(() => {
-                const el = contentRef.current?.querySelector(`[data-filepath="${targetPath}"]`);
-                if (el) {
-                  el.style.outline = '2px solid var(--accent)';
-                  el.style.background = 'var(--accent-bg)';
-                  setTimeout(() => { if (el) { el.style.outline = ''; el.style.background = ''; } }, 3000);
-                }
-              }, 100);
-            }
-            return;
-          }
-          index++;
+    // Compute the target row index from the SAME row list FileTree renders,
+    // so schema rows and the trailing SharedMetaData row are counted too.
+    const rows = buildExplorerRows(folders, {
+      search: lowerSearch, searchFiles, searchFolders, expandedFolders,
+      modifiedFiles, hasSharedMetadata, sharedMetadataRelPath,
+    });
+    const rowPath = (row) =>
+      row.kind === 'file' ? row.file.relativePath
+      : row.kind === 'schema' ? row.folder.metadataRelPath
+      : row.kind === 'shared' ? row.relativePath
+      : null;
+    const index = rows.findIndex((row) => rowPath(row) === targetPath);
+    if (index < 0) return;
+    const ROW_H = 24;
+    const targetY = index * ROW_H;
+    const viewH = scrollEl.clientHeight;
+    scrollEl.scrollTop = Math.max(0, targetY - viewH / 2 + ROW_H / 2);
+    if (highlight) {
+      // Try to find the DOM element (it should be rendered after scroll)
+      setTimeout(() => {
+        const el = contentRef.current?.querySelector(`[data-filepath="${targetPath.replace(/"/g, '\\"')}"]`);
+        if (el) {
+          el.style.outline = '2px solid var(--accent)';
+          el.style.background = 'var(--accent-bg)';
+          setTimeout(() => { if (el) { el.style.outline = ''; el.style.background = ''; } }, 3000);
         }
-      }
+      }, 100);
     }
   };
 
@@ -247,8 +258,13 @@ export default function Sidebar({
 
   useEffect(() => {
     if (!scrollToFile) return;
+    // scrollToFile is either a plain relativePath (deliberate "center" → flash
+    // the row) or { path, highlight:false } for passive focuses (editor click,
+    // tab-switch sync) that should scroll without the attention-grabbing flash.
+    const path = typeof scrollToFile === 'string' ? scrollToFile : scrollToFile.path;
+    const highlight = typeof scrollToFile === 'string' ? true : scrollToFile.highlight !== false;
     const timer = setTimeout(() => {
-      scrollFileIntoView(scrollToFile, true);
+      scrollFileIntoView(path, highlight);
       if (onScrollToFileDone) onScrollToFileDone();
     }, 100);
     return () => clearTimeout(timer);
@@ -277,12 +293,6 @@ export default function Sidebar({
         >
           Favorites
         </div>
-        <div
-          className={`sidebar-tab ${activeTab === 'schema' ? 'active' : ''}`}
-          onClick={() => onTabChange('schema')}
-        >
-          Schema
-        </div>
         {mods.length > 0 && (
           <div
             className={`sidebar-tab ${activeTab === 'mods' ? 'active' : ''}`}
@@ -295,12 +305,30 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-search">
-        <input
-          type="text"
-          placeholder="Search..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ flex: 1, minWidth: 0, paddingRight: search ? 22 : undefined }}
+          />
+          {search && (
+            <span
+              onClick={() => setSearch('')}
+              title="Clear search"
+              style={{
+                position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                width: 16, height: 16, borderRadius: '50%', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, lineHeight: 1, color: 'var(--text-dim)',
+                background: 'var(--selection)', userSelect: 'none',
+              }}
+            >
+              ✕
+            </span>
+          )}
+        </div>
         {(activeTab === 'files' || activeTab === 'mods') && (
           <>
             <SidebarFilterBtn active={searchFiles} onClick={() => setSearchFiles(v => !v)} title="Match file names">≡</SidebarFilterBtn>
@@ -318,12 +346,12 @@ export default function Sidebar({
         <SidebarErrorBoundary key={activeTab} label={activeTab}>
         {activeTab === 'files' && (
           <FileTree
-            folders={filteredFolders}
+            folders={folders}
             theme={theme}
             expandedFolders={expandedFolders}
             onToggleFolder={onToggleFolder}
             onOpenFile={onOpenFile}
-            activeFile={activeFile}
+            activeFiles={activeFileSet}
             modifiedFiles={modifiedFiles}
             search={lowerSearch}
             searchFiles={searchFiles}
@@ -337,6 +365,8 @@ export default function Sidebar({
             expansions={expansions}
             favorites={favorites || []}
             onFavoritesChange={onFavoritesChange}
+            hasSharedMetadata={hasSharedMetadata}
+            sharedMetadataRelPath={sharedMetadataRelPath}
           />
         )}
         {activeTab === 'favorites' && (
@@ -344,7 +374,7 @@ export default function Sidebar({
             favorites={favorites || []}
             onFavoritesChange={onFavoritesChange}
             onOpenFile={onOpenFile}
-            activeFile={activeFile}
+            activeFiles={activeFileSet}
             modifiedFiles={modifiedFiles}
             search={lowerSearch}
             folders={folders}
@@ -353,21 +383,6 @@ export default function Sidebar({
             onPrompt={openPrompt}
             onShowInFolder={onShowInFolder}
             onRenameFile={onRenameFile}
-          />
-        )}
-        {activeTab === 'schema' && (
-          <SchemaList
-            folders={folders}
-            onOpenFile={onOpenFile}
-            activeFile={activeFile}
-            modifiedFiles={modifiedFiles}
-            search={lowerSearch}
-            hasSharedMetadata={hasSharedMetadata}
-            onContextMenu={setContextMenu}
-            onPrompt={openPrompt}
-            onShowInFolder={onShowInFolder}
-            onRenameFile={onRenameFile}
-            sharedMetadataRelPath={sharedMetadataRelPath}
           />
         )}
         {activeTab === 'mods' && (
@@ -375,7 +390,7 @@ export default function Sidebar({
             mods={mods}
             folders={folders}
             onOpenFile={onOpenFile}
-            activeFile={activeFile}
+            activeFiles={activeFileSet}
             modifiedFiles={modifiedFiles}
             search={lowerSearch}
             searchFiles={searchFiles}
@@ -460,42 +475,66 @@ function useVcsStatus() {
   return v;
 }
 
-function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile, activeFile, modifiedFiles, search, searchFiles = true, searchFolders = true, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateFolder, onCreateXmlFile, expansions = [], favorites, onFavoritesChange }) {
+// Build the Explorer (files tab) row list: the global SharedMetaData schema
+// pinned at the very TOP, then each folder header followed by that folder's
+// schema (.metadata) as its FIRST child and then the folder's data files.
+// Shared by FileTree (which renders these rows) and Sidebar.scrollFileIntoView
+// (which needs the row index to scroll) so the two can never drift apart.
+//
+// `search` is the already-lowercased query. Mod-owned tables and mod-layer
+// files are excluded here — they live exclusively in the MODS sidebar.
+function buildExplorerRows(folders, {
+  search, searchFiles = true, searchFolders = true, expandedFolders,
+  modifiedFiles, hasSharedMetadata, sharedMetadataRelPath,
+}) {
+  const rows = [];
+  // Global shared schema, pinned above every folder.
+  if (hasSharedMetadata) {
+    const rel = sharedMetadataRelPath || 'SharedMetaData.metadata';
+    const sharedMatch = !search || 'sharedmetadata'.includes(search) || rel.toLowerCase().includes(search);
+    if (sharedMatch) rows.push({ kind: 'shared', relativePath: rel });
+  }
+  for (const folder of folders) {
+    if (folder.schemaLayer && folder.schemaLayer.startsWith('mod_')) continue;
+    const nonModFiles = folder.xmlFiles.filter((f) => !f.layer || !f.layer.startsWith('mod_'));
+    const hasSchema = !!folder.metadataFile;
+    // Skip a folder with no non-mod files and no schema — nothing to show.
+    if (nonModFiles.length === 0 && !hasSchema) continue;
+    const folderNameMatch = !!search && searchFolders && folder.name.toLowerCase().includes(search);
+    const schemaNameMatch = !!search && searchFiles && hasSchema && folder.metadataFile.toLowerCase().includes(search);
+    const filteredFiles = search
+      ? (folderNameMatch
+          ? nonModFiles
+          : searchFiles
+            ? nonModFiles.filter((f) => f.name.toLowerCase().includes(search))
+            : [])
+      : nonModFiles;
+    // The schema row shows when not searching, or the folder name matches, or
+    // the schema file name itself matches.
+    const showSchema = hasSchema && (!search || folderNameMatch || schemaNameMatch);
+    // When searching, drop a folder that contributes nothing.
+    if (search && !folderNameMatch && filteredFiles.length === 0 && !showSchema) continue;
+    const isExpanded = search ? true : expandedFolders.has(folder.name);
+    const hasModified = nonModFiles.some((f) => modifiedFiles.has(f.relativePath))
+      || (hasSchema && modifiedFiles.has(folder.metadataRelPath));
+    rows.push({ kind: 'folder', folder, isExpanded, hasModified });
+    if (isExpanded) {
+      if (showSchema) rows.push({ kind: 'schema', folder });
+      for (const file of filteredFiles) rows.push({ kind: 'file', file, folder });
+    }
+  }
+  return rows;
+}
+
+function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile, activeFiles, modifiedFiles, search, searchFiles = true, searchFolders = true, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateFolder, onCreateXmlFile, expansions = [], favorites, onFavoritesChange, hasSharedMetadata, sharedMetadataRelPath }) {
   const vcs = useVcsStatus();
   const folderIcon = theme === 'dark' ? '../../icons/folder-yellow.png' : '../../icons/folder-purple.png';
 
-  // Flatten folders and their expanded files into a row list for virtualization
-  const rows = useMemo(() => {
-    const r = [];
-    for (const folder of folders) {
-      // Explorer hides everything mod-related: mod-layer xmlFiles (filtered
-      // below) AND folders whose schema is owned by a mod (a "mod-owned
-      // table" — exists only because the mod introduced it). Those belong
-      // exclusively in the MODS sidebar.
-      if (folder.schemaLayer && folder.schemaLayer.startsWith('mod_')) continue;
-      const nonModFiles = folder.xmlFiles.filter((f) => !f.layer || !f.layer.startsWith('mod_'));
-      // Also skip a folder whose only contributors are mods AND has no schema —
-      // shouldn't normally happen (a no-schema mod-only folder), but defensive.
-      if (nonModFiles.length === 0 && !folder.metadataFile) continue;
-      const folderNameMatch = search && searchFolders && folder.name.toLowerCase().includes(search);
-      const filteredFiles = search
-        ? (folderNameMatch
-            ? nonModFiles
-            : searchFiles
-              ? nonModFiles.filter((f) => f.name.toLowerCase().includes(search))
-              : [])
-        : nonModFiles;
-      const isExpanded = search ? true : expandedFolders.has(folder.name);
-      const hasModified = nonModFiles.some((f) => modifiedFiles.has(f.relativePath));
-      r.push({ kind: 'folder', folder, isExpanded, hasModified });
-      if (isExpanded) {
-        for (const file of filteredFiles) {
-          r.push({ kind: 'file', file, folder });
-        }
-      }
-    }
-    return r;
-  }, [folders, expandedFolders, modifiedFiles, search, searchFiles, searchFolders]);
+  // Flatten folders, their schema + data files into a row list for virtualization.
+  const rows = useMemo(() => buildExplorerRows(folders, {
+    search, searchFiles, searchFolders, expandedFolders,
+    modifiedFiles, hasSharedMetadata, sharedMetadataRelPath,
+  }), [folders, expandedFolders, modifiedFiles, search, searchFiles, searchFolders, hasSharedMetadata, sharedMetadataRelPath]);
 
   const ROW_H = 24;
 
@@ -505,7 +544,11 @@ function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile,
       rowHeight={ROW_H}
       overscan={200}
       style={{ flex: 1, height: '100%' }}
-      getRowKey={(r) => r.kind === 'folder' ? `F:${r.folder.name}` : `f:${r.file.relativePath}`}
+      getRowKey={(r) =>
+        r.kind === 'folder' ? `F:${r.folder.name}`
+        : r.kind === 'schema' ? `S:${r.folder.name}`
+        : r.kind === 'shared' ? 'SHARED'
+        : `f:${r.file.relativePath}`}
       renderRow={(row) => {
         if (row.kind === 'folder') {
           const folder = row.folder;
@@ -594,12 +637,84 @@ function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile,
             </div>
           );
         }
+        // Schema (.metadata) row — the folder's schema, shown as its first
+        // child in a lighter italic font with a trailing [SCHEMA] tag.
+        if (row.kind === 'schema' || row.kind === 'shared') {
+          const isShared = row.kind === 'shared';
+          const relPath = isShared ? row.relativePath : row.folder.metadataRelPath;
+          const absPath = isShared ? null : row.folder.metadataPath;
+          const labelText = isShared ? 'SharedMetaData' : displayName(row.folder.metadataFile);
+          const isActive = activeFiles.has(relPath);
+          return (
+            <div
+              className={`file-tree-file ${isActive ? 'active' : ''}`}
+              data-filepath={relPath}
+              style={{
+                height: ROW_H, boxSizing: 'border-box',
+                // The global schema is a root-level entry pinned at the very
+                // top, so it sits at the folder indent with a divider below.
+                ...(isShared ? { paddingLeft: 12, borderBottom: '1px solid var(--border)' } : null),
+              }}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/arcen-file', relPath);
+                e.dataTransfer.setData('text/arcen-type', 'schema');
+              }}
+              onDragEnd={(e) => {
+                const winX = window.screenX || 0, winY = window.screenY || 0;
+                const winW = window.outerWidth, winH = window.outerHeight;
+                if (e.screenX < winX || e.screenX > winX + winW || e.screenY < winY || e.screenY > winY + winH) {
+                  if (window.arcenApi?.detachTabAtPosition) {
+                    onOpenFile(relPath, 'schema');
+                    setTimeout(() => {
+                      window.arcenApi.detachTabAtPosition(relPath, e.screenX, e.screenY);
+                    }, 200);
+                  }
+                }
+              }}
+              onClick={() => onOpenFile(relPath, 'schema')}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const x = e.clientX, y = e.clientY;
+                const items = [
+                  { label: 'Open', action: () => onOpenFile(relPath, 'schema') },
+                  { label: 'Show in Explorer', action: () => {
+                    if (absPath) { onShowInFolder(absPath); return; }
+                    if (window.arcenApi?.scAbsPath && window.arcenApi?.showInFolder) {
+                      window.arcenApi.scAbsPath(relPath).then((abs) => abs && window.arcenApi.showInFolder(abs));
+                    }
+                  }},
+                  { label: 'Copy full path', action: () => {
+                    if (absPath) { navigator.clipboard.writeText(absPath).catch(() => {}); return; }
+                    if (window.arcenApi?.scAbsPath) {
+                      window.arcenApi.scAbsPath(relPath).then((abs) => { if (abs) navigator.clipboard.writeText(abs).catch(() => {}); });
+                    }
+                  }},
+                ];
+                onContextMenu({ x, y, items });
+              }}
+            >
+              {vcs.statusBackendLive && (
+                <StatusPip status={vcs.dataByRel.get(relPath) || 'clean'} reserveSpace style={{ marginRight: -2 }} />
+              )}
+              <span style={{
+                flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                fontStyle: 'italic', color: isActive ? undefined : 'var(--text-dim)',
+              }}>
+                {labelText} <span style={{ fontSize: 10, opacity: 0.7 }}>[SCHEMA]</span>
+              </span>
+              {modifiedFiles.has(relPath) && (
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gutter-changed)' }} />
+              )}
+            </div>
+          );
+        }
         // file row
         const file = row.file;
         const folder = row.folder;
         return (
           <div
-            className={`file-tree-file ${activeFile === file.relativePath ? 'active' : ''}`}
+            className={`file-tree-file ${activeFiles.has(file.relativePath) ? 'active' : ''}`}
             data-filepath={file.relativePath}
             style={{ height: ROW_H, boxSizing: 'border-box' }}
             draggable
@@ -691,137 +806,13 @@ function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile,
 // Call sites must set `position: relative` on the row's outer element.
 //
 // `left` is tuned per-tab so the pip ends up 2–3 px before the text:
-//   schema tab rows have paddingLeft: 12 → pip at 4
 //   favorites rows use the default paddingLeft: 28 → pip at 19
 const overlayPipStyle = (left) => ({ position: 'absolute', left, top: '50%', transform: 'translateY(-50%)' });
-const OVERLAY_PIP_SCHEMA = overlayPipStyle(4);
 const OVERLAY_PIP_FAVORITES = overlayPipStyle(19);
 
-function SchemaList({ folders, onOpenFile, activeFile, modifiedFiles, search, hasSharedMetadata, onContextMenu, onShowInFolder, onRenameFile, sharedMetadataRelPath }) {
-  const vcs = useVcsStatus();
-
-  // Right-click menu for a schema (.metadata) file. Keeps Open and
-  // Show-in-Explorer, omits rename (renaming .metadata breaks the
-  // folder↔schema wiring), and appends VCS commands from the active
-  // provider when live.
-  const schemaBaseItems = (relPath) => [
-    { label: 'Open', action: () => onOpenFile(relPath, 'schema') },
-    { label: 'Show in Explorer', action: () => {
-      if (window.arcenApi?.scAbsPath && window.arcenApi?.showInFolder) {
-        window.arcenApi.scAbsPath(relPath).then((abs) => abs && window.arcenApi.showInFolder(abs));
-      }
-    }},
-    { label: 'Copy full path', action: () => {
-      if (window.arcenApi?.scAbsPath) {
-        window.arcenApi.scAbsPath(relPath).then((abs) => {
-          if (abs) navigator.clipboard.writeText(abs).catch(() => {});
-        });
-      }
-    }},
-  ];
-
-  // Helper that opens the menu immediately with the base items, then
-  // appends VCS items asynchronously when they arrive (one IPC round-trip).
-  const openSchemaContextMenu = async (e, relPath) => {
-    e.preventDefault();
-    if (!onContextMenu) return;
-    const x = e.clientX, y = e.clientY;
-    const baseItems = schemaBaseItems(relPath);
-    onContextMenu({ x, y, items: baseItems });
-    if (vcs.statusBackendLive) {
-      const scItems = await buildScItemsRelAsync(relPath, 'file');
-      if (scItems.length) {
-        onContextMenu({ x, y, items: [...baseItems, { divider: true }, ...scItems] });
-      }
-    }
-  };
-
-  // Schema tab only lists base+DLC-owned schemas. Mod-owned tables (those
-  // whose schemaLayer is a mod) live under the MODS sidebar instead — the
-  // user shouldn't see mod schemas commingled with the official ones.
-  const filtered = folders.filter((f) => {
-    if (!f.metadataFile) return false;
-    if (f.schemaLayer && f.schemaLayer.startsWith('mod_')) return false;
-    return !search || f.name.toLowerCase().includes(search) || f.metadataFile.toLowerCase().includes(search);
-  });
-
-  const sharedRelPath = sharedMetadataRelPath || 'SharedMetaData.metadata';
-  const showShared = hasSharedMetadata && (!search || 'sharedmetadata'.includes(search));
-
-  return (
-    <div>
-      {showShared && (
-        <>
-          <div
-            className={`file-tree-file ${activeFile === sharedRelPath ? 'active' : ''}`}
-            data-filepath={sharedRelPath}
-            style={{ paddingLeft: 12, fontWeight: 700, position: 'relative' }}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData('text/arcen-file', sharedRelPath);
-              e.dataTransfer.setData('text/arcen-type', 'schema');
-            }}
-            onDragEnd={(e) => {
-              const winX = window.screenX || 0, winY = window.screenY || 0;
-              const winW = window.outerWidth, winH = window.outerHeight;
-              if (e.screenX < winX || e.screenX > winX + winW || e.screenY < winY || e.screenY > winY + winH) {
-                if (window.arcenApi?.detachTabAtPosition) {
-                  onOpenFile(sharedRelPath, 'schema');
-                  setTimeout(() => {
-                    window.arcenApi.detachTabAtPosition(sharedRelPath, e.screenX, e.screenY);
-                  }, 200);
-                }
-              }
-            }}
-            onClick={() => onOpenFile(sharedRelPath, 'schema')}
-            onContextMenu={(e) => openSchemaContextMenu(e, sharedRelPath)}
-          >
-            {vcs.statusBackendLive && (
-              <StatusPip status={vcs.dataByRel.get(sharedRelPath) || 'clean'} style={OVERLAY_PIP_SCHEMA} />
-            )}
-            SharedMetaData
-          </div>
-          <div style={{ borderTop: '1px solid var(--border)', margin: '8px 0' }} />
-        </>
-      )}
-      {filtered.map((folder) => {
-        const relPath = folder.metadataRelPath;
-        return (
-          <div
-            key={relPath}
-            className={`file-tree-file ${activeFile === relPath ? 'active' : ''}`}
-            data-filepath={relPath}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData('text/arcen-file', relPath);
-              e.dataTransfer.setData('text/arcen-type', 'schema');
-            }}
-            onDragEnd={(e) => {
-              const winX = window.screenX || 0, winY = window.screenY || 0;
-              const winW = window.outerWidth, winH = window.outerHeight;
-              if (e.screenX < winX || e.screenX > winX + winW || e.screenY < winY || e.screenY > winY + winH) {
-                if (window.arcenApi?.detachTabAtPosition) {
-                  onOpenFile(relPath, 'schema');
-                  setTimeout(() => {
-                    window.arcenApi.detachTabAtPosition(relPath, e.screenX, e.screenY);
-                  }, 200);
-                }
-              }
-            }}
-            onClick={() => onOpenFile(relPath, 'schema')}
-            onContextMenu={(e) => openSchemaContextMenu(e, relPath)}
-            style={{ paddingLeft: 12, position: 'relative' }}
-          >
-            {vcs.statusBackendLive && (
-              <StatusPip status={vcs.dataByRel.get(relPath) || 'clean'} style={OVERLAY_PIP_SCHEMA} />
-            )}
-            <span style={{ flex: 1, fontSize: 12 }}>{displayName(folder.metadataFile)}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// (The standalone Schema sidebar tab was removed — schemas now appear inline in
+// the Explorer tab as the first child of each folder, with the global
+// SharedMetaData pinned after all folders. See buildExplorerRows + FileTree.)
 
 // MODS sidebar tab. Three levels:
 //   mod (top, with color swatch + display name)
@@ -836,7 +827,7 @@ function SchemaList({ folders, onOpenFile, activeFile, modifiedFiles, search, ha
 // Mods and their inner folders share the parent's `expandedFolders` Set, but
 // using a prefixed key (`mods:<layerId>` / `mods:<layerId>/<folderName>`)
 // to avoid collisions with regular table-folder names.
-function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search, searchFiles = true, searchFolders = true, searchMods = true, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, detachOnDragEnd, modSchemaExtensions = [] }) {
+function ModsList({ mods, folders, onOpenFile, activeFiles, modifiedFiles, search, searchFiles = true, searchFolders = true, searchMods = true, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, detachOnDragEnd, modSchemaExtensions = [] }) {
   const vcs = useVcsStatus();
 
   // Lookup: (layerId, folderName) → extension record. Lets us surface a mod's
@@ -970,7 +961,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                 {filteredModLevel.map((f) => (
                   <div
                     key={f.relativePath}
-                    className={`file-tree-file ${activeFile === f.relativePath ? 'active' : ''}`}
+                    className={`file-tree-file ${activeFiles.has(f.relativePath) ? 'active' : ''}`}
                     data-filepath={f.relativePath}
                     draggable
                     onDragStart={(e) => {
@@ -1060,7 +1051,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                       {folderExpanded && schemaEntry && (
                         <div
                           key={schemaEntry.relativePath}
-                          className={`file-tree-file ${activeFile === schemaEntry.relativePath ? 'active' : ''}`}
+                          className={`file-tree-file ${activeFiles.has(schemaEntry.relativePath) ? 'active' : ''}`}
                           data-filepath={schemaEntry.relativePath}
                           draggable
                           onDragStart={(e) => {
@@ -1087,7 +1078,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                             // the sidebar. Schema files are flagged via the leading [SCHEMA] prefix
                             // instead, so the user can tell a schema from a data file at a glance
                             // without making every schema row visually prominent.
-                            fontWeight: activeFile === schemaEntry.relativePath ? 600 : 'inherit',
+                            fontWeight: activeFiles.has(schemaEntry.relativePath) ? 600 : 'inherit',
                           }}>
                             <span style={{ color: 'var(--text-dim)', marginRight: 4 }} title={schemaEntry.isExtension ? 'Schema extension: additive overlay (no node_name)' : undefined}>[{schemaEntry.isExtension ? 'EXT' : 'SCHEMA'}]</span>{stripDataExt(schemaEntry.name)}
                           </span>
@@ -1099,7 +1090,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
                       {folderExpanded && modFiles.map((file) => (
                         <div
                           key={file.relativePath}
-                          className={`file-tree-file ${activeFile === file.relativePath ? 'active' : ''}`}
+                          className={`file-tree-file ${activeFiles.has(file.relativePath) ? 'active' : ''}`}
                           data-filepath={file.relativePath}
                           draggable
                           onDragStart={(e) => {
@@ -1173,7 +1164,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
   );
 }
 
-function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFile, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
+function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFiles, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
   const vcs = useVcsStatus();
 
   // relativePath → xmlFile (carries layer/layerNum) so favorite rows can show
@@ -1430,7 +1421,7 @@ function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFile, m
               return (
                 <div
                   key={filePath}
-                  className={`file-tree-file ${activeFile === filePath ? 'active' : ''}`}
+                  className={`file-tree-file ${activeFiles.has(filePath) ? 'active' : ''}`}
                   data-filepath={filePath}
                   draggable
                   onDragStart={(e) => {
@@ -1535,7 +1526,7 @@ function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFile, m
                 {isExp && filteredFiles.map((filePath) => (
                   <div
                     key={filePath}
-                    className={`file-tree-file ${activeFile === filePath ? 'active' : ''}`}
+                    className={`file-tree-file ${activeFiles.has(filePath) ? 'active' : ''}`}
                     data-filepath={filePath}
                     style={{ position: 'relative' }}
                     onClick={() => onOpenFile(filePath, 'xml')}

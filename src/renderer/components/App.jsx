@@ -113,6 +113,7 @@ export default function App() {
   const [globalSearchScopeFilter, setGlobalSearchScopeFilter] = useState('all');
   const [editorScale, setEditorScale] = useState(100);
   const [scrollSidebarTo, setScrollSidebarTo] = useState(null); // relativePath to scroll to
+  const [activeFiles, setActiveFiles] = useState([]); // active file of EVERY open window (main + detached)
   const [favorites, setFavorites] = useState([]); // [{ name, files: [relPath] }]
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [sidebarSide, setSidebarSide] = useState('left'); // 'left' | 'right'
@@ -239,6 +240,10 @@ export default function App() {
   folderNameByRelPathRef.current = folderNameByRelPath;
   const layerByRelPathRef = useRef(layerByRelPath);
   layerByRelPathRef.current = layerByRelPath;
+  // Current tabs, read by once-registered IPC handlers (onFocusTab) without
+  // re-subscribing on every tabs change.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   // Structural (layout) validation entries — orphan expansion folders, stray
   // .metadata in expansions. Static per discovery; shipped to the worker on
   // every validate so they appear in the validation window alongside file
@@ -662,19 +667,20 @@ export default function App() {
     const nav = navHistoryRef.current;
     setNavState({ canBack: nav.pos > 0, canForward: nav.pos < nav.list.length - 1 });
 
-    // Auto-switch sidebar to match the active tab's layer/type. Mod files
-    // (xml AND schema) always pull the sidebar to MODS — same routing as
-    // the openFile path. Non-mod schema files pull to Schema. Anything else
-    // bounces off Schema/Mods back to Files.
+    // Auto-switch sidebar to match the active tab's layer. Mod files (xml AND
+    // schema) always pull the sidebar to MODS, since they're hidden in the
+    // Explorer. Everything else (xml AND non-mod schema, which now comingle in
+    // the Explorer) bounces off the MODS tab back to Files. Favorites is left
+    // alone.
     if (tab) {
       const isMod = /^mod_/.test(layerByRelPathRef.current.get(tab.relativePath)?.layer || '');
       if (isMod) {
         if (sidebarTab !== 'mods') setSidebarTab('mods');
-      } else if (tab.type === 'schema' && sidebarTab !== 'schema') {
-        setSidebarTab('schema');
-      } else if (tab.type !== 'schema' && (sidebarTab === 'schema' || sidebarTab === 'mods')) {
+      } else if (sidebarTab === 'mods') {
         setSidebarTab('files');
       }
+      // Feed the cross-window "center on active" target.
+      window.arcenApi.reportActiveFile?.(tab.relativePath);
     }
   }, [activeTabIndex, tabs]);
 
@@ -699,6 +705,14 @@ export default function App() {
   // ── VCS / Plugin store ──
   useEffect(() => {
     vcsStore.init();
+  }, []);
+
+  // ── Active file of every open window (for sidebar highlight) ──
+  useEffect(() => {
+    window.arcenApi.getActiveFiles?.()
+      .then((f) => { if (Array.isArray(f)) setActiveFiles(f); })
+      .catch(() => {});
+    window.arcenApi.onActiveFilesChanged?.((f) => setActiveFiles(Array.isArray(f) ? f : []));
   }, []);
 
   // ── Multi-window: tab removed/added by main process ──
@@ -750,15 +764,16 @@ export default function App() {
       }, 100);
     });
 
-    window.arcenApi.onFocusSidebarOnFile((raw, mode) => {
+    window.arcenApi.onFocusSidebarOnFile((raw, opts) => {
       const relativePath = norm(raw);
-      // mode is set when a detached window's tab context menu invokes
-      // "Center explorer/schema sidebar on this" — switch tab so the
-      // scroll target is in the visible list. Without mode, just expand
-      // and scroll (the passive sync that fires on every detached focus).
-      if (mode === 'files') setSidebarTab('files');
-      else if (mode === 'schema') setSidebarTab('schema');
-      setScrollSidebarTo(relativePath);
+      // Route to the tab that actually contains this file: mod files live in
+      // MODS, everything else (xml + non-mod schema) in the Explorer. Then
+      // expand its folder and scroll to it. opts.highlight (set by a detached
+      // window's deliberate "Center sidebar on this") flashes the row; the
+      // passive sync on detached tab-switch / editor click leaves it off.
+      const isMod = /^mod_/.test(layerByRelPathRef.current.get(relativePath)?.layer || '');
+      setSidebarTab(isMod ? 'mods' : 'files');
+      setScrollSidebarTo(opts?.highlight ? relativePath : { path: relativePath, highlight: false });
       const folderName = folderNameOf(relativePath);
       setExpandedFolders(prev => new Set(prev).add(folderName));
     });
@@ -772,7 +787,7 @@ export default function App() {
 
     window.arcenApi.onFocusTab((raw) => {
       const relativePath = norm(raw);
-      const idx = tabs.findIndex(t => t.relativePath === relativePath);
+      const idx = tabsRef.current.findIndex(t => t.relativePath === relativePath);
       if (idx >= 0) setActiveTabIndex(idx);
     });
     window.arcenApi.onOpenGlobalSearch((query, replace, detachedFile) => {
@@ -795,7 +810,9 @@ export default function App() {
       // is being mounted fresh, fall back to rAF instead of a fixed timeout.
       if (!focusInput()) requestAnimationFrame(focusInput);
     });
-  }, [tabs]);
+    // Registered once; onFocusTab reads current tabs via tabsRef. Re-running
+    // this on every `tabs` change used to stack duplicate IPC listeners.
+  }, []);
 
   // Register main window tabs on startup
   useEffect(() => {
@@ -1435,15 +1452,13 @@ export default function App() {
     setSavedContents((prev) => ({ ...prev, [normPath]: content }));
 
     // Auto-switch sidebar to match file context. Mod files always pull the
-    // sidebar to the MODS tab (since they're hidden everywhere else); schema
-    // files pull to Schema unless we're already on Mods (mod-owned schemas
-    // belong in MODS). Regular xml files pull off Schema/Mods back to Files.
+    // sidebar to the MODS tab (since they're hidden everywhere else). Everything
+    // else — xml and non-mod schema, which now comingle in the Explorer —
+    // bounces off MODS back to Files. Favorites is left alone.
     const opensInMod = /^mod_/.test(layerByRelPathRef.current.get(normPath)?.layer || '');
     if (opensInMod) {
       if (sidebarTab !== 'mods') setSidebarTab('mods');
-    } else if (type === 'schema' && sidebarTab !== 'schema') {
-      setSidebarTab('schema');
-    } else if (type !== 'schema' && (sidebarTab === 'schema' || sidebarTab === 'mods')) {
+    } else if (sidebarTab === 'mods') {
       setSidebarTab('files');
     }
 
@@ -2856,19 +2871,14 @@ export default function App() {
         });
       }
     }
-    if (isXml) {
-      items.push({ label: 'Center explorer sidebar on this', action: () => {
-        setSidebarTab('files');
-        const folderName = folderNameOf(tab.relativePath);
-        setExpandedFolders((prev) => new Set(prev).add(folderName));
-        setScrollSidebarTo(tab.relativePath);
-      }});
-    } else {
-      items.push({ label: 'Center schema sidebar on this', action: () => {
-        setSidebarTab('schema');
-        setScrollSidebarTo(tab.relativePath);
-      }});
-    }
+    items.push({ label: 'Center sidebar on this', action: () => {
+      // Mod files live in MODS; xml + non-mod schema comingle in the Explorer.
+      const isMod = /^mod_/.test(layerByRelPath.get(tab.relativePath)?.layer || '');
+      setSidebarTab(isMod ? 'mods' : 'files');
+      const folderName = folderNameOf(tab.relativePath);
+      setExpandedFolders((prev) => new Set(prev).add(folderName));
+      setScrollSidebarTo(tab.relativePath);
+    }});
     items.push({ label: 'Open in Explorer', action: () => {
       if (window.arcenApi?.scAbsPath && window.arcenApi?.showInFolder) {
         window.arcenApi.scAbsPath(tab.relativePath).then((abs) => abs && window.arcenApi.showInFolder(abs));
@@ -2883,15 +2893,38 @@ export default function App() {
     }});
     items.push({ label: 'Close', action: () => closeTab(index) });
     items.push({ label: 'Close others', action: () => {
-      // In main window, only close tabs of the same type (schema or xml)
-      const keepType = tab.type;
+      // Keep tabs from the OTHER sidebar bucket so switching context doesn't
+      // silently lose them: closing from a mod tab keeps non-mod tabs and vice
+      // versa (xml + schema are one bucket now). Only same-bucket peers close.
+      const clickedIsMod = /^mod_/.test(layerByRelPath.get(tab.relativePath)?.layer || '');
       setTabs(prev => {
-        const kept = prev.filter(t => t.relativePath === tab.relativePath || t.type !== keepType);
+        const kept = prev.filter(t => t.relativePath === tab.relativePath
+          || (/^mod_/.test(layerByRelPath.get(t.relativePath)?.layer || '') !== clickedIsMod));
         const newIdx = kept.findIndex(t => t.relativePath === tab.relativePath);
         setActiveTabIndex(newIdx >= 0 ? newIdx : 0);
         return kept;
       });
     }});
+    if (tab.type === 'schema') {
+      items.push({ label: 'Close All Schema Tabs', action: () => {
+        setTabs(prev => {
+          const schemaTabs = prev.filter(t => t.type === 'schema');
+          if (!schemaTabs.length) return prev;
+          const anyModified = schemaTabs.some(t => fileContents[t.relativePath] !== savedContents[t.relativePath]);
+          if (anyModified && !confirm('Some schema tabs have unsaved changes. Close all anyway?')) return prev;
+          const kept = prev.filter(t => t.type !== 'schema');
+          setActiveTabIndex(curIdx => {
+            const curTab = prev[curIdx];
+            if (curTab && curTab.type !== 'schema') {
+              const ni = kept.findIndex(t => t.relativePath === curTab.relativePath);
+              return ni >= 0 ? ni : 0;
+            }
+            return kept.length ? 0 : -1;
+          });
+          return kept;
+        });
+      }});
+    }
     // Append the active VCS provider's commands when connected + cache alive.
     // Labels and IDs come from the provider via scGetCommands so this list
     // automatically reflects whichever provider is active (SVN, Git, …).
@@ -2917,12 +2950,11 @@ export default function App() {
 
   const activeTab = tabs[activeTabIndex] ?? null;
 
-  // Filter tabs shown in the tab bar based on sidebar context. Three buckets:
-  //   schema sidebar → schema (.metadata) tabs only, excluding mod tabs
-  //   mods sidebar   → tabs whose file lives in a mod layer, both xml + metadata
-  //   else (files / favorites) → non-mod, non-schema (xml) tabs only
+  // Filter tabs shown in the tab bar based on sidebar context. Two buckets:
+  //   mods sidebar → tabs whose file lives in a mod layer (xml + metadata)
+  //   else (files / favorites) → all non-mod tabs (xml AND schema comingle,
+  //     mirroring the detached windows and the Explorer's inline schemas)
   // A tab is "a mod tab" if its relativePath maps to a mod layer in layerByRelPath.
-  const isSchemaMode = sidebarTab === 'schema';
   const isModsMode = sidebarTab === 'mods';
   const isModTab = useCallback(
     (relPath) => /^mod_/.test(layerByRelPath.get(relPath)?.layer || ''),
@@ -2931,11 +2963,9 @@ export default function App() {
   const visibleTabs = useMemo(() => {
     return tabs.map((t, i) => ({ ...t, realIndex: i })).filter((t) => {
       const mod = isModTab(t.relativePath);
-      if (isModsMode) return mod;
-      if (mod) return false; // mod tabs hide from non-MODS sidebar contexts
-      return isSchemaMode ? t.type === 'schema' : t.type !== 'schema';
+      return isModsMode ? mod : !mod;
     });
-  }, [tabs, isSchemaMode, isModsMode, isModTab]);
+  }, [tabs, isModsMode, isModTab]);
   const visibleActiveIndex = visibleTabs.findIndex((t) => t.realIndex === activeTabIndex);
 
   const activeSchema = (() => {
@@ -3143,6 +3173,7 @@ export default function App() {
         }}
         onOpenFile={openFile}
         activeFile={activeTab?.relativePath}
+        activeFiles={activeFiles}
         modifiedFiles={modifiedFiles}
         schemas={schemas}
         hasSharedMetadata={!!sharedSchema}
@@ -3150,6 +3181,19 @@ export default function App() {
         onFavoritesChange={setFavorites}
         scrollToFile={scrollSidebarTo}
         onScrollToFileDone={() => setScrollSidebarTo(null)}
+        onRequestCenterActive={async () => {
+          // Center on the active file of whichever window was focused most
+          // recently (main or a detached window); fall back to this window's
+          // active tab if the main process can't answer.
+          let target = null;
+          try { target = await window.arcenApi.getCenterTarget?.(); } catch (_) {}
+          if (!target) target = activeTab?.relativePath || null;
+          if (!target) return;
+          const isMod = isModTab(target);
+          setSidebarTab(isMod ? 'mods' : 'files');
+          if (!isMod) setExpandedFolders((prev) => new Set(prev).add(folderNameOf(target)));
+          setScrollSidebarTo(target);
+        }}
         onShowInFolder={(filePath) => window.arcenApi.showInFolder(filePath)}
         sharedMetadataRelPath={dataLayout.sharedMetadataRelPath}
         expansions={dataLayout.expansions}
@@ -3278,9 +3322,11 @@ export default function App() {
               // menu → "Show changes since save".
               const tab = tabs[realIdx];
               if (tab) {
-                const isSchema = tab.type === 'schema';
-                setSidebarTab(isSchema ? 'schema' : 'files');
-                if (!isSchema) {
+                // Mod files live in MODS; xml + non-mod schema comingle in the
+                // Explorer, where the schema sits inside its folder.
+                const isMod = /^mod_/.test(layerByRelPath.get(tab.relativePath)?.layer || '');
+                setSidebarTab(isMod ? 'mods' : 'files');
+                if (!isMod) {
                   setExpandedFolders((prev) => new Set(prev).add(folderNameOf(tab.relativePath)));
                 }
                 setScrollSidebarTo(tab.relativePath);
@@ -3362,6 +3408,15 @@ export default function App() {
               onNavigateToFK={handleNavigateToFK}
               onNavigateToMetadata={handleNavigateToMetadata}
               onAddUnknownSubNodeToSchema={handleAddUnknownSubNodeToSchema}
+              onCursorFocusFile={(rp) => {
+                // Left-click in the editor focuses the sidebar on this file,
+                // like clicking its tab header — but without the 3s flash,
+                // since clicks are frequent.
+                const isMod = isModTab(rp);
+                setSidebarTab(isMod ? 'mods' : 'files');
+                if (!isMod) setExpandedFolders((prev) => new Set(prev).add(folderNameOf(rp)));
+                setScrollSidebarTo({ path: rp, highlight: false });
+              }}
               scrollToLine={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.line : null}
               scrollHighlight={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.highlight : null}
               scrollToken={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine._t : null}
@@ -3449,7 +3504,7 @@ export default function App() {
         {globalSearch && (
           <GlobalSearch
             allFileContents={allFileContentsRef.current}
-            searchScope={activeTab ? (activeTab.type === 'schema' ? 'schema' : 'xml') : (sidebarTab === 'schema' ? 'schema' : 'xml')}
+            searchScope={activeTab ? (activeTab.type === 'schema' ? 'schema' : 'xml') : 'xml'}
             panelHeight={globalSearchHeight}
             folders={folders}
             layerByRelPath={layerByRelPath}

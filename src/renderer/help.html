@@ -168,15 +168,14 @@ sidebar: `<h1>Sidebar</h1>
 <h2>Tabs</h2>
 <table>
 <tr><th>Tab</th><th>Contents</th></tr>
-<tr><td><strong>Explorer</strong></td><td>All base + DLC folders in the data root, each expanding to show their XML files. Mod files are excluded — they live behind the MODS tab.</td></tr>
+<tr><td><strong>Explorer</strong></td><td>All base + DLC folders in the data root. The global <code>SharedMetaData</code> schema is pinned at the very top. Below it, each folder expands to show its per-table <code>.metadata</code> schema first (a lighter italic row tagged <code>[SCHEMA]</code>), then its XML files. Mod files are excluded — they live behind the MODS tab.</td></tr>
 <tr><td><strong>Favorites</strong></td><td>User-curated groups plus auto-managed groups (Beta, DLC1-DLC6). See the Favorites topic for details.</td></tr>
-<tr><td><strong>Schema</strong></td><td>The <code>SharedMetaData.metadata</code> at the top, followed by every folder's per-table <code>.metadata</code> file. Clicking one opens it for editing the schema rather than data.</td></tr>
 <tr><td><strong>Mods</strong></td><td>Only present in suite mode when at least one mod is active. Per-mod tree with the mod's metadata files and its data files. See the Mods topic.</td></tr>
 </table>
-<p>The tab bar's filtering mirrors the sidebar: Explorer and Favorites show only XML tabs; Schema shows only metadata tabs; Mods shows mod files (xml + metadata) and hides them from every other tab.</p>
+<p>The tab bar's filtering mirrors the sidebar: Explorer and Favorites show all non-mod tabs (XML and schema commingled); Mods shows mod files (xml + metadata) and hides them from every other tab.</p>
 
 <h2>Search / Filter Bar</h2>
-<p>The search box at the top of the sidebar filters the visible files by folder name or file name. While a search is active, all folders expand so matches are visible without manual clicks. The search text is per-tab and persists across app restarts.</p>
+<p>The search box at the top of the sidebar filters the visible files by folder name or file name. While a search is active, all folders expand so matches are visible without manual clicks. The search text is per-tab and persists across app restarts. A <strong>✕</strong> button appears at the right of the box while it has text — clicking it instantly erases the search. Clearing the filter (by ✕ or backspace) re-centers the Explorer on your active tab.</p>
 <p>On the <strong>Explorer</strong> and <strong>Mods</strong> tabs, three small toggle buttons appear to the right of the search box to control what names are matched:</p>
 <table>
 <tr><th>Button</th><th>What it matches</th></tr>
@@ -299,7 +298,7 @@ sidebar: `<h1>Sidebar</h1>
 <p>Lives at the root of the data folder. Defines universal attributes inherited by every table: <code>id</code>, <code>display_name</code>, <code>copy_from</code>, <code>is_partial_record</code>, <code>description</code>, <code>internal_notes</code>, etc. Individual table schemas can override these with <code>type="existing-override"</code>.</p>
 
 <h2>Tab Bar Filtering</h2>
-<p>The tab bar filters by context: when the sidebar is on Explorer or Favorites, only XML file tabs are shown. When on Schema, only metadata tabs are shown. All tabs remain open internally; the view just filters.</p>`,
+<p>The tab bar filters by context: when the sidebar is on Explorer or Favorites, all non-mod tabs are shown — XML and schema (<code>.metadata</code>) files commingle, with schema tabs tinted to stand apart. When on Mods, only mod-layer tabs are shown. All tabs remain open internally; the view just filters.</p>`,
 
 'local-search': `<h1>Local Find & Replace</h1>
 <p>Open with <kbd>Ctrl+F</kbd> (find) or <kbd>Ctrl+H</kbd> (find+replace, focus on replace field). The panel appears at the top of the editor.</p>
@@ -686,7 +685,7 @@ mods: `<h1>Mods</h1>
 <p>Right-clicking a mod row offers <strong>Show in Explorer</strong>, copy mod-folder path, and <strong>New Folder in this mod&hellip;</strong> (useful when introducing a brand-new mod-owned table).</p>
 
 <h2>Tab Filtering</h2>
-<p>Mod file tabs are <strong>only visible when the MODS sidebar tab is active</strong>, mirroring how schema tabs are only visible on the Schema sidebar. Opening a mod file from anywhere (Favorites, FK navigation, etc.) auto-switches the sidebar to MODS so the tab becomes visible.</p>
+<p>Mod file tabs are <strong>only visible when the MODS sidebar tab is active</strong>. Opening a mod file from anywhere (Favorites, FK navigation, etc.) auto-switches the sidebar to MODS so the tab becomes visible. (Non-mod XML and schema tabs, by contrast, always show together in the Explorer/Favorites view.)</p>
 <p>When a mod file leaks into a non-MODS view (e.g. you favorite one and look at it from the Favorites tab, or you have one open as the active tab), its label is appended with <code>[Mod: &lt;Display Name&gt;]</code> so it's clear which mod owns it.</p>
 
 <h2>Cross-Layer Rules</h2>

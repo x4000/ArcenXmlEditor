@@ -45,13 +45,13 @@ const SEMANTIC_COLORS = {
     fkDropdown: '#0891b2', fkList: '#AF00DB', bool: '#0000ff',
     number: '#098658', dimmed: '#c0c0c0',
     headerAttrName: '#ff2dcb', headerAttrValue: '#b749fe',
-    subNodeTag: '#923aff',
+    subNodeTag: '#923aff', stringDropdown: '#b8860b',
   },
   dark: {
     fkDropdown: '#4dd0e1', fkList: '#c586c0', bool: '#569cd6',
     number: '#b5cea8', dimmed: '#555555',
     headerAttrName: '#ff5c8a', headerAttrValue: '#f0b0ff',
-    subNodeTag: '#b57cff',
+    subNodeTag: '#b57cff', stringDropdown: '#d7ba7d',
   },
 };
 
@@ -228,6 +228,12 @@ export function createSchemaDecorations(getSchema, theme) {
               break;
             case 'node-dropdown':
               valueColor = colors.fkDropdown;
+              underline = true;
+              break;
+            case 'string-dropdown':
+              // Same clickable affordance as an FK dropdown (dotted underline),
+              // distinct color so it's not mistaken for a cross-table link.
+              valueColor = colors.stringDropdown;
               underline = true;
               break;
             case 'node-list':
