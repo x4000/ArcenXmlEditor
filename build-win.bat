@@ -8,6 +8,7 @@ echo.
 
 cd /d "%~dp0"
 
+call node build.js
 call npx electron-builder --win dir -c.compression=store -c.npmRebuild=false
 
 set EXITCODE=%ERRORLEVEL%
