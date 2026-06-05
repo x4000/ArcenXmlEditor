@@ -145,6 +145,7 @@ hotkeys: `<h1>Keyboard Shortcuts</h1>
 <h2>Navigation</h2>
 <table>
 <tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+G</kbd></td><td>Go To Line — opens a popup to jump to a specific line number in the current file</td></tr>
 <tr><td><kbd>Mouse Button 4</kbd></td><td>Navigate back (previous tab in history)</td></tr>
 <tr><td><kbd>Mouse Button 5</kbd></td><td>Navigate forward</td></tr>
 <tr><td>Back/Forward buttons in title bar</td><td>Same as mouse buttons 4/5</td></tr>
@@ -156,6 +157,7 @@ hotkeys: `<h1>Keyboard Shortcuts</h1>
 <tr><td><kbd>Tab</kbd></td><td>Insert tab character</td></tr>
 <tr><td><kbd>Shift+Tab</kbd></td><td>Remove one leading tab</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>New line with auto-indent (no indent inside quotes)</td></tr>
+<tr><td><kbd>F2</kbd></td><td>Rename ID — when the cursor is on a central-identifier attribute value (e.g. <code>id="SomeName"</code>), opens a rename dialog that updates the ID and all FK references to it across every loaded file</td></tr>
 </table>
 
 <p>When text is selected and you press <kbd>Ctrl+F</kbd>, <kbd>Ctrl+Shift+F</kbd>, or their H variants, the selected text is automatically placed into the search field.</p>`,
@@ -174,7 +176,15 @@ sidebar: `<h1>Sidebar</h1>
 <p>The tab bar's filtering mirrors the sidebar: Explorer and Favorites show only XML tabs; Schema shows only metadata tabs; Mods shows mod files (xml + metadata) and hides them from every other tab.</p>
 
 <h2>Search / Filter Bar</h2>
-<p>The search box at the top of the sidebar filters the visible files by folder name or file name. While a search is active, all folders expand so matches are visible without manual clicks. The search state is per-tab and persists across app restarts.</p>
+<p>The search box at the top of the sidebar filters the visible files by folder name or file name. While a search is active, all folders expand so matches are visible without manual clicks. The search text is per-tab and persists across app restarts.</p>
+<p>On the <strong>Explorer</strong> and <strong>Mods</strong> tabs, three small toggle buttons appear to the right of the search box to control what names are matched:</p>
+<table>
+<tr><th>Button</th><th>What it matches</th></tr>
+<tr><td><code>≡</code></td><td>File names. When active, files whose names contain the search text are shown.</td></tr>
+<tr><td>Folder icon</td><td>Folder/table names. When a folder name matches, all files inside it are shown regardless of their own names.</td></tr>
+<tr><td><code>⚙</code></td><td>Mod names (Mods tab only). When a mod's display name or folder name matches, all of its files are shown.</td></tr>
+</table>
+<p>All three are on by default. Toggle any off to narrow the scope — e.g. turn off file matching to see only folders whose names match, without every file inside every other folder disappearing. These toggle states are <strong>per-tab</strong>: the settings on the Explorer tab are independent of those on the Mods tab.</p>
 
 <h2>Context Menus</h2>
 <p>Right-click a folder for:</p>
@@ -214,6 +224,15 @@ sidebar: `<h1>Sidebar</h1>
 <li><strong>FK List values (node-list):</strong> Single click opens a multi-select picker with checkboxes. Ctrl+click on any entry navigates to that ID.</li>
 <li><strong>Color hex values (#RRGGBB):</strong> A color swatch appears overlaid on the hash. Clicking the swatch opens the native color picker.</li>
 </ul>
+
+<h2>F2 — Rename ID</h2>
+<p>Place the cursor anywhere inside a central-identifier attribute value (typically <code>id="..."</code> or <code>name="..."</code>) and press <kbd>F2</kbd>. A dialog appears showing the current ID and an input for the new name.</p>
+<p>On confirm, AXE performs a batch rename across <strong>all currently loaded files</strong>:</p>
+<ul>
+<li>The central-identifier attribute in the source file is updated to the new value.</li>
+<li>Every FK attribute in every file whose <code>node_source</code> points to the same table and whose value matches the old ID is updated — including comma-separated <code>node-list</code> values where only the matching token is replaced.</li>
+</ul>
+<p>The rename does <em>not</em> update the LookupSwaps table automatically — add a swap entry there manually if backward compatibility matters. It also does not save files; changes appear as unsaved edits with the normal yellow gutter markers.</p>
 
 <h2>Ctrl+Click</h2>
 <ul>
@@ -348,6 +367,21 @@ sidebar: `<h1>Sidebar</h1>
 <li><strong>Schema file active:</strong> Searches all .metadata files.</li>
 <li>The scope is <strong>locked at search time</strong> &mdash; switching tabs doesn't change your results.</li>
 </ul>
+
+<h2>Scope Filter</h2>
+<p>A dropdown to the right of the Search button limits which files are searched. The selected scope is remembered across sessions.</p>
+<table>
+<tr><th>Scope</th><th>Files searched</th></tr>
+<tr><td>All</td><td>Every file of the active type (XML or META), subject to the MODS toggle.</td></tr>
+<tr><td>Current File</td><td>Only the file that was active when the search was opened.</td></tr>
+<tr><td>Current Folder</td><td>All files in the same table folder as the active file, across all layers.</td></tr>
+<tr><td>Current Package Folder</td><td>Files in the same table folder <em>and</em> the same layer (base, a specific DLC, or a specific mod) as the active file.</td></tr>
+<tr><td>Current Package</td><td>All files in the same layer (base, DLC, or mod) as the active file.</td></tr>
+<tr><td>Only Base Game</td><td>Base-game files only — no DLC, no mods.</td></tr>
+<tr><td>Only DLCs</td><td>Files from any DLC/expansion layer.</td></tr>
+<tr><td>Only Mods</td><td>Files from any mod layer.</td></tr>
+</table>
+<p>When global search is opened from a <strong>detached window</strong>, the scope is evaluated against that window's active file, so "Current File" and "Current Folder" still work as expected even though the search panel lives in the main window.</p>
 
 <h2>Toggle Buttons</h2>
 <p>Same as local search: Wildcard, Regex, Match Case, Whole Word, plus a Replace toggle (<kbd>R</kbd>).</p>
