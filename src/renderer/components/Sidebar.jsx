@@ -105,6 +105,15 @@ export default function Sidebar({
   modSchemaExtensions = [],
 }) {
   const [searchByTab, setSearchByTab] = useState({ files: '', favorites: '', schema: '' });
+  const [searchFilesByTab, setSearchFilesByTab] = useState({ files: true, mods: true });
+  const [searchFoldersByTab, setSearchFoldersByTab] = useState({ files: true, mods: true });
+  const [searchModsByTab, setSearchModsByTab] = useState({ mods: true });
+  const searchFiles = searchFilesByTab[activeTab] ?? true;
+  const searchFolders = searchFoldersByTab[activeTab] ?? true;
+  const searchMods = searchModsByTab[activeTab] ?? true;
+  const setSearchFiles = (val) => setSearchFilesByTab(prev => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] ?? true) : val }));
+  const setSearchFolders = (val) => setSearchFoldersByTab(prev => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] ?? true) : val }));
+  const setSearchMods = (val) => setSearchModsByTab(prev => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] ?? true) : val }));
   const [contextMenu, setContextMenu] = useState(null);
   // Native window.prompt() is disabled in Electron's renderer (silently
   // returns null), so every Rename / New Folder / New XML File entry
@@ -137,8 +146,9 @@ export default function Sidebar({
 
   const filteredFolders = folders.filter((f) => {
     if (!search) return true;
-    if (f.name.toLowerCase().includes(lowerSearch)) return true;
-    return f.xmlFiles.some((x) => x.name.toLowerCase().includes(lowerSearch));
+    if (searchFolders && f.name.toLowerCase().includes(lowerSearch)) return true;
+    if (searchFiles && f.xmlFiles.some((x) => x.name.toLowerCase().includes(lowerSearch))) return true;
+    return false;
   });
 
   // Scroll the active file into view. Strategy depends on which tab is
@@ -193,8 +203,13 @@ export default function Sidebar({
     // Compute target row index by scanning folders/files in the same order as FileTree
     let index = 0;
     for (const folder of folders) {
+      const folderNameMatches = lowerSearch && searchFolders && folder.name.toLowerCase().includes(lowerSearch);
       const filteredFiles = lowerSearch
-        ? folder.xmlFiles.filter((f) => f.name.toLowerCase().includes(lowerSearch) || folder.name.toLowerCase().includes(lowerSearch))
+        ? (folderNameMatches
+            ? folder.xmlFiles
+            : searchFiles
+              ? folder.xmlFiles.filter((f) => f.name.toLowerCase().includes(lowerSearch))
+              : [])
         : folder.xmlFiles;
       const isExpanded = lowerSearch ? true : expandedFolders.has(folder.name);
       index++; // folder header
@@ -286,6 +301,17 @@ export default function Sidebar({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {(activeTab === 'files' || activeTab === 'mods') && (
+          <>
+            <SidebarFilterBtn active={searchFiles} onClick={() => setSearchFiles(v => !v)} title="Match file names">≡</SidebarFilterBtn>
+            <SidebarFilterBtn active={searchFolders} onClick={() => setSearchFolders(v => !v)} title="Match folder names">
+              <img src={theme === 'dark' ? '../../icons/folder-yellow.png' : '../../icons/folder-purple.png'} alt="" style={{ width: 13, height: 11, display: 'block', opacity: searchFolders ? 1 : 0.4 }} />
+            </SidebarFilterBtn>
+            {activeTab === 'mods' && (
+              <SidebarFilterBtn active={searchMods} onClick={() => setSearchMods(v => !v)} title="Match mod names">⚙</SidebarFilterBtn>
+            )}
+          </>
+        )}
       </div>
 
       <div className="sidebar-content" ref={contentRef}>
@@ -300,6 +326,8 @@ export default function Sidebar({
             activeFile={activeFile}
             modifiedFiles={modifiedFiles}
             search={lowerSearch}
+            searchFiles={searchFiles}
+            searchFolders={searchFolders}
             onContextMenu={setContextMenu}
             onPrompt={openPrompt}
             onShowInFolder={onShowInFolder}
@@ -350,6 +378,9 @@ export default function Sidebar({
             activeFile={activeFile}
             modifiedFiles={modifiedFiles}
             search={lowerSearch}
+            searchFiles={searchFiles}
+            searchFolders={searchFolders}
+            searchMods={searchMods}
             expandedFolders={expandedFolders}
             onToggleFolder={onToggleFolder}
             onContextMenu={setContextMenu}
@@ -429,7 +460,7 @@ function useVcsStatus() {
   return v;
 }
 
-function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile, activeFile, modifiedFiles, search, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateFolder, onCreateXmlFile, expansions = [], favorites, onFavoritesChange }) {
+function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile, activeFile, modifiedFiles, search, searchFiles = true, searchFolders = true, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateFolder, onCreateXmlFile, expansions = [], favorites, onFavoritesChange }) {
   const vcs = useVcsStatus();
   const folderIcon = theme === 'dark' ? '../../icons/folder-yellow.png' : '../../icons/folder-purple.png';
 
@@ -446,8 +477,13 @@ function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile,
       // Also skip a folder whose only contributors are mods AND has no schema —
       // shouldn't normally happen (a no-schema mod-only folder), but defensive.
       if (nonModFiles.length === 0 && !folder.metadataFile) continue;
+      const folderNameMatch = search && searchFolders && folder.name.toLowerCase().includes(search);
       const filteredFiles = search
-        ? nonModFiles.filter((f) => f.name.toLowerCase().includes(search) || folder.name.toLowerCase().includes(search))
+        ? (folderNameMatch
+            ? nonModFiles
+            : searchFiles
+              ? nonModFiles.filter((f) => f.name.toLowerCase().includes(search))
+              : [])
         : nonModFiles;
       const isExpanded = search ? true : expandedFolders.has(folder.name);
       const hasModified = nonModFiles.some((f) => modifiedFiles.has(f.relativePath));
@@ -459,7 +495,7 @@ function FileTree({ folders, theme, expandedFolders, onToggleFolder, onOpenFile,
       }
     }
     return r;
-  }, [folders, expandedFolders, modifiedFiles, search]);
+  }, [folders, expandedFolders, modifiedFiles, search, searchFiles, searchFolders]);
 
   const ROW_H = 24;
 
@@ -800,7 +836,7 @@ function SchemaList({ folders, onOpenFile, activeFile, modifiedFiles, search, ha
 // Mods and their inner folders share the parent's `expandedFolders` Set, but
 // using a prefixed key (`mods:<layerId>` / `mods:<layerId>/<folderName>`)
 // to avoid collisions with regular table-folder names.
-function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, detachOnDragEnd, modSchemaExtensions = [] }) {
+function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search, searchFiles = true, searchFolders = true, searchMods = true, expandedFolders, onToggleFolder, onContextMenu, onPrompt, onShowInFolder, onRenameFile, onCreateXmlFile, onCreateFolder, detachOnDragEnd, modSchemaExtensions = [] }) {
   const vcs = useVcsStatus();
 
   // Lookup: (layerId, folderName) → extension record. Lets us surface a mod's
@@ -835,9 +871,7 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
     return out;
   }, [mods, folders, extensionByModFolder]);
 
-  // Filename-substring search: if the search box has text, only show files
-  // matching it, plus any mod whose displayName or dirName matches anywhere.
-  const matchesSearch = (s) => !search || s.toLowerCase().includes(search);
+  const strMatch = (s) => s.toLowerCase().includes(search);
 
   const fileType = (relPath) => (relPath.endsWith('.metadata') ? 'schema' : 'xml');
 
@@ -847,22 +881,31 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
         const modKey = `mods:${mod.layerId}`;
         const isExpanded = search ? true : (expandedFolders.has(modKey) || false);
         const folderViews = modFolderViews.get(mod.layerId) || [];
-        const filteredModLevel = mod.modLevelFiles.filter((f) => matchesSearch(f.name));
+
+        // When the mod name itself matches (and searchMods is on), show everything in it.
+        const modNameMatches = search && searchMods && (strMatch(mod.displayName) || strMatch(mod.dirName));
+
+        const filteredModLevel = mod.modLevelFiles.filter((f) => {
+          if (!search) return true;
+          if (modNameMatches) return true;
+          return searchFiles && strMatch(f.name);
+        });
+
         const filteredFolders = folderViews
           .map(({ folder, modFiles, ownsSchema, extension }) => {
-            // Schema file shown as a leaf row when:
-            //   - this mod OWNS the folder's schema, OR
-            //   - this mod ships a schema EXTENSION for it
-            // Either way the user wants to see / open the file.
+            // When folder name matches (and searchFolders is on), show all content in it.
+            const folderNameMatches = search && !modNameMatches && searchFolders && strMatch(folder.name);
+            const showAll = !search || modNameMatches || folderNameMatches;
+
             let schemaEntry = null;
-            if (ownsSchema && folder.metadataFile && (!search || matchesSearch(folder.metadataFile))) {
+            if (ownsSchema && folder.metadataFile && (showAll || (searchFiles && strMatch(folder.metadataFile)))) {
               schemaEntry = {
                 name: folder.metadataFile,
                 path: folder.metadataPath,
                 relativePath: folder.metadataRelPath,
                 isExtension: false,
               };
-            } else if (extension && (!search || matchesSearch(extension.metadataFile))) {
+            } else if (extension && (showAll || (searchFiles && strMatch(extension.metadataFile)))) {
               schemaEntry = {
                 name: extension.metadataFile,
                 path: extension.metadataPath,
@@ -874,15 +917,14 @@ function ModsList({ mods, folders, onOpenFile, activeFile, modifiedFiles, search
               folder,
               ownsSchema,
               hasExtension: !!extension,
-              modFiles: search ? modFiles.filter((f) => matchesSearch(f.name)) : modFiles,
+              modFiles: showAll ? modFiles : searchFiles ? modFiles.filter((f) => strMatch(f.name)) : [],
               schemaEntry,
             };
           })
           .filter(({ modFiles, schemaEntry }) => modFiles.length > 0 || schemaEntry);
-        const modMatchesSearch = !search || matchesSearch(mod.displayName) || matchesSearch(mod.dirName);
-        // Hide a mod entirely if the search filter clears everything for it
-        // AND the mod's own names don't match either.
-        if (search && !modMatchesSearch && filteredModLevel.length === 0 && filteredFolders.every(f => f.modFiles.length === 0)) return null;
+
+        // Hide a mod entirely when it has no matching content and its own name doesn't match.
+        if (search && !modNameMatches && filteredModLevel.length === 0 && filteredFolders.length === 0) return null;
 
         const sourceTag = mod.source === 'x' ? ''
           : mod.source === 'n' ? ' [non-distributed]'
@@ -1623,6 +1665,25 @@ function TextPromptDialog({ title, label, defaultValue, onSubmit, onClose, layer
         </div>
       </div>
     </div>
+  );
+}
+
+function SidebarFilterBtn({ active, onClick, title, children }) {
+  return (
+    <span
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 20, height: 20, cursor: 'pointer', borderRadius: 3, flexShrink: 0,
+        border: '1px solid rgba(0,0,0,0.15)', userSelect: 'none',
+        background: active ? 'var(--tab-bg)' : 'rgba(0,0,0,0.06)',
+        color: active ? '#fff' : 'var(--text-dim)',
+        fontSize: 12,
+      }}
+    >
+      {children}
+    </span>
   );
 }
 

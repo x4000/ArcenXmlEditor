@@ -2005,9 +2005,9 @@ ipcMain.on('log-to-terminal', (_event, message) => {
 });
 
 // Open global search in main window (from detached windows)
-ipcMain.on('open-global-search', (_event, query, replace) => {
+ipcMain.on('open-global-search', (_event, query, replace, currentFile) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('open-global-search', query, replace);
+    mainWindow.webContents.send('open-global-search', query, replace, currentFile);
     mainWindow.focus();
   }
 });

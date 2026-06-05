@@ -28,7 +28,7 @@ import { createContextMenu, findSpellingErrorAtPos } from '../editor/contextMenu
 import { classifyWordScript, asciifyHomoglyphs, getForbiddenCharFix } from '../editor/spellcheck';
 import { clampToViewport } from '../editor/menuUtils';
 import { createChangeGutter, setSavedContent, setVcsBaseContent } from '../editor/changeGutter';
-import { buildMergedSchema } from '../editor/schemaParser';
+import { buildMergedSchema, getCentralIdentifierKey } from '../editor/schemaParser';
 import { getFKOptionsForLayer } from '../editor/fkIndex';
 import { createSpellcheckDecorations, isSpellcheckTarget, isInferredDevContext, isDevNotesAttr, buildNodeFlagRanges, isInRange } from '../editor/spellcheck';
 import { FKDropdown, FKMultiSelect } from './FKPickers';
@@ -216,6 +216,12 @@ export default function EditorPane({
   schemaRef.current = isSchema ? null : mergedSchema;
   fkIndexRef.current = fkIndex || {};
   spellcheckerRef.current = spellchecker || null;
+  const sharedSchemaRef = useRef(null);
+  sharedSchemaRef.current = sharedSchema;
+  const relativePathRef = useRef(relativePath);
+  relativePathRef.current = relativePath;
+  const isSchemaRef = useRef(isSchema);
+  isSchemaRef.current = isSchema;
 
   const fileLayerRef = useRef('base');
   fileLayerRef.current = fileLayer || 'base';
@@ -440,9 +446,25 @@ export default function EditorPane({
           if (!focusReplace()) requestAnimationFrame(focusReplace);
           return true;
         }, scope: 'editor search-panel' },
+        ...createArcenKeymap(),
+        { key: 'F2', run: (view) => {
+          if (isSchemaRef.current) return false;
+          const curSchema = schemaRef.current;
+          const curSharedSchema = sharedSchemaRef.current;
+          if (!curSchema || !curSharedSchema) return false;
+          const idKey = getCentralIdentifierKey(curSharedSchema);
+          const pos = view.state.selection.main.head;
+          const docText = view.state.doc.toString();
+          const attrs = buildAttrMap(tokenize(docText), curSchema);
+          const attr = attrs.find(a => a.nm === idKey && a.vs != null && pos >= a.vs && pos <= a.ve);
+          if (!attr) return false;
+          document.dispatchEvent(new CustomEvent('idRenameRequested', {
+            detail: { oldId: attr.v, relativePath: relativePathRef.current },
+          }));
+          return true;
+        }},
         ...inSelectionKeymap,
         ...searchKeymap,
-        ...createArcenKeymap(),
         ...defaultKeymap,
         ...historyKeymap,
       ]),

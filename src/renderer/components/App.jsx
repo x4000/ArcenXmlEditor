@@ -7,11 +7,13 @@ import DiffView from './DiffView';
 import GlobalSearch from './GlobalSearch';
 import TitleBar from './TitleBar';
 import GoToLineDialog from './GoToLineDialog';
+import RenameIdDialog from './RenameIdDialog';
 import GrammarSettings from './GrammarSettings';
 import DataRootPicker from './DataRootPicker';
 const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey, composeSchemaForFileLayer } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
+import { tokenize, buildAttrMap } from '../editor/xmlTokenizer';
 import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps } from '../editor/validation';
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from '../editor/spellcheck';
@@ -25,6 +27,18 @@ import NSpell from 'nspell';
  *   correct(word, true)  → regular dictionary + dev dictionary (dev contexts)
  * `suggest` and `add` pass through to the underlying nspell.
  */
+// Replace oldId with newId in a comma-separated FK attribute value,
+// preserving any whitespace around each token.
+function replaceIdInValue(attrValue, oldId, newId) {
+  if (attrValue === oldId) return newId;
+  return attrValue.split(',').map(p => {
+    const trimmed = p.trim();
+    if (trimmed !== oldId) return p;
+    const idx = p.indexOf(trimmed);
+    return p.slice(0, idx) + newId + p.slice(idx + trimmed.length);
+  }).join(',');
+}
+
 function makeDevAwareChecker(nspell, devWordsRef) {
   return {
     correct: (word, isDev) => {
@@ -96,6 +110,7 @@ export default function App() {
   // asks for them. Stored in _user_editor_session.json alongside other
   // window-level state.
   const [globalSearchIncludeMods, setGlobalSearchIncludeMods] = useState(false);
+  const [globalSearchScopeFilter, setGlobalSearchScopeFilter] = useState('all');
   const [editorScale, setEditorScale] = useState(100);
   const [scrollSidebarTo, setScrollSidebarTo] = useState(null); // relativePath to scroll to
   const [favorites, setFavorites] = useState([]); // [{ name, files: [relPath] }]
@@ -571,6 +586,9 @@ export default function App() {
       if (savedSession.globalSearchIncludeMods != null) {
         setGlobalSearchIncludeMods(!!savedSession.globalSearchIncludeMods);
       }
+      if (savedSession.globalSearchScopeFilter) {
+        setGlobalSearchScopeFilter(savedSession.globalSearchScopeFilter);
+      }
       if (savedSession.refPanelScale) {
         setRefPanelScale(savedSession.refPanelScale);
       }
@@ -757,13 +775,13 @@ export default function App() {
       const idx = tabs.findIndex(t => t.relativePath === relativePath);
       if (idx >= 0) setActiveTabIndex(idx);
     });
-    window.arcenApi.onOpenGlobalSearch((query, replace) => {
+    window.arcenApi.onOpenGlobalSearch((query, replace, detachedFile) => {
       // Blur the editor synchronously so any keys the user types between
       // the IPC arrival and the panel mount go to <body> instead of
       // leaking into the document.
       try { editorViewRef.current?.contentDOM.blur(); } catch (_) {}
       if (query) setGlobalSearchQuery(query);
-      setGlobalSearch({ replace: !!replace });
+      setGlobalSearch({ replace: !!replace, detachedFile: detachedFile || null });
       const focusInput = () => {
         const el = globalSearchInputRef.current;
         if (!el) return false;
@@ -1360,9 +1378,10 @@ export default function App() {
       refPanelScale,
       theme,
       globalSearchIncludeMods,
+      globalSearchScopeFilter,
       favorites,
     });
-  }, [tabs, activeTabIndex, expandedFolders, sidebarTab, sidebarWidth, sidebarSide, globalSearchHeight, editorScale, refPanelScale, theme, globalSearchIncludeMods, favorites]);
+  }, [tabs, activeTabIndex, expandedFolders, sidebarTab, sidebarWidth, sidebarSide, globalSearchHeight, editorScale, refPanelScale, theme, globalSearchIncludeMods, globalSearchScopeFilter, favorites]);
 
   // Push window state to main process whenever it changes (debounced)
   useEffect(() => {
@@ -3014,6 +3033,65 @@ export default function App() {
 
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
 
+  // Batch-rename a central identifier and all FK references to it across all
+  // currently loaded files. Called by RenameIdDialog on confirm.
+  const handleIdRename = useCallback((oldId, newId, sourceRelPath) => {
+    const curSharedSchema = sharedSchemaLatest.current;
+    if (!curSharedSchema) return;
+    const idKey = getCentralIdentifierKey(curSharedSchema);
+    const curSchemas = schemasLatest.current;
+    const curFolderNames = folderNameByRelPathRef.current;
+    const tableName = curFolderNames.get(sourceRelPath);
+    if (!tableName) return;
+
+    // The FK index aliases both the full folder name ("1_BuildingTag") and the
+    // base name ("BuildingTag") to the same entry object. Comparing by reference
+    // lets us match whichever form a given schema uses in node_source.
+    const curFKIndex = fkIndexLatest.current;
+    const tableEntry = curFKIndex[tableName] || curFKIndex[tableName.replace(/^\d+_/, '')];
+
+    const updates = {};
+    for (const [relPath, content] of Object.entries(allFileContentsRef.current)) {
+      if (!content) continue;
+      const folderName = curFolderNames.get(relPath);
+      const fileSchema = (folderName && curSchemas[folderName]) || null;
+      const fileMergedSchema = fileSchema && curSharedSchema
+        ? buildMergedSchema(curSharedSchema, fileSchema)
+        : fileSchema;
+      if (!fileMergedSchema) continue;
+
+      const attrs = buildAttrMap(tokenize(content), fileMergedSchema);
+      const toReplace = [];
+      for (const attr of attrs) {
+        if (attr.vs == null) continue;
+        const isCentralId = relPath === sourceRelPath && attr.nm === idKey && attr.v === oldId;
+        const isFK = !!attr.src && tableEntry &&
+          curFKIndex[attr.src] === tableEntry && (
+            attr.v === oldId || attr.v.split(',').some(p => p.trim() === oldId)
+          );
+        if (isCentralId || isFK) {
+          toReplace.push({ from: attr.vs, to: attr.ve, isList: attr.v !== oldId });
+        }
+      }
+      if (toReplace.length === 0) continue;
+
+      toReplace.sort((a, b) => b.from - a.from);
+      let updated = content;
+      for (const { from, to, isList } of toReplace) {
+        const oldVal = updated.slice(from, to);
+        const newVal = isList ? replaceIdInValue(oldVal, oldId, newId) : newId;
+        updated = updated.slice(0, from) + newVal + updated.slice(to);
+      }
+      updates[relPath] = updated;
+    }
+
+    if (Object.keys(updates).length === 0) return;
+    setFileContents(prev => ({ ...prev, ...updates }));
+    for (const [relPath, content] of Object.entries(updates)) {
+      allFileContentsRef.current[relPath] = content;
+    }
+  }, []);
+
   // Sidebar resize drag handler. When the sidebar is on the right, the
   // handle sits on its left edge — so dragging right SHRINKS the sidebar.
   // Flipping the delta sign keeps the visual feel identical (drag the
@@ -3375,6 +3453,10 @@ export default function App() {
             panelHeight={globalSearchHeight}
             folders={folders}
             layerByRelPath={layerByRelPath}
+            folderNameByRelPath={folderNameByRelPath}
+            currentFile={globalSearch?.detachedFile || tabs[activeTabIndex]?.relativePath || null}
+            scopeFilter={globalSearchScopeFilter}
+            onScopeFilterChange={setGlobalSearchScopeFilter}
             includeMods={globalSearchIncludeMods}
             onIncludeModsChange={setGlobalSearchIncludeMods}
             initialReplace={globalSearch.replace}
@@ -3447,6 +3529,9 @@ export default function App() {
 
       {/* Go-To-Line Dialog — mounts once, opens via global custom event */}
       <GoToLineDialog />
+
+      {/* Rename-ID Dialog — F2 on central-identifier opens this; performs batch FK update */}
+      <RenameIdDialog onConfirm={handleIdRename} />
 
       {/* Grammar LLM settings — opens via grammarSettingsRequested event */}
       <GrammarSettings />

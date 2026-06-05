@@ -27,6 +27,10 @@ export default function GlobalSearch({
   searchScope,
   folders,
   layerByRelPath,
+  folderNameByRelPath,
+  currentFile,
+  scopeFilter = 'all',
+  onScopeFilterChange,
   includeMods = false,
   onIncludeModsChange,
   onOpenFile,
@@ -100,13 +104,44 @@ export default function GlobalSearch({
     setShowReplace(!!initialReplace);
   }, [initialReplace]);
 
-  // Build file list from current contents, filtered by the XML/META + MODS
-  // toggles. Mod files are excluded by default — only included when the user
-  // explicitly turns the MODS filter on (the one persisted toggle).
+  function matchesScope(path) {
+    const pathLayer = layerByRelPath?.get(path)?.layer ?? null;
+    switch (scopeFilter) {
+      case 'current-file':
+        return !!currentFile && path === currentFile;
+      case 'current-folder': {
+        if (!currentFile || !folderNameByRelPath) return false;
+        const cf = folderNameByRelPath.get(currentFile);
+        return !!cf && folderNameByRelPath.get(path) === cf;
+      }
+      case 'current-package-folder': {
+        if (!currentFile || !folderNameByRelPath) return false;
+        const cf = folderNameByRelPath.get(currentFile);
+        if (!cf || folderNameByRelPath.get(path) !== cf) return false;
+        const cl = layerByRelPath?.get(currentFile)?.layer ?? null;
+        return pathLayer === cl;
+      }
+      case 'current-package': {
+        if (!currentFile) return false;
+        const cl = layerByRelPath?.get(currentFile)?.layer ?? null;
+        return pathLayer === cl;
+      }
+      case 'base-game':
+        return !pathLayer;
+      case 'dlcs':
+        return /^dlc/.test(pathLayer ?? '');
+      case 'mods':
+        return /^mod_/.test(pathLayer ?? '');
+      default: // 'all'
+        if (!includeMods && layerByRelPath && /^mod_/.test(pathLayer ?? '')) return false;
+        return true;
+    }
+  }
+
   function getFileList() {
     const contents = allFileContents || {};
     return Object.entries(contents).filter(([path]) => {
-      if (!includeMods && layerByRelPath && /^mod_/.test(layerByRelPath.get(path)?.layer || '')) return false;
+      if (!matchesScope(path)) return false;
       if (path.endsWith('.metadata')) return includeMeta;
       if (path.endsWith('.xml')) return includeXml;
       return false;
@@ -166,7 +201,7 @@ export default function GlobalSearch({
       }
     }
     return grouped;
-  }, [activeQuery, allFileContents, useWildcard, useRegex, matchCase, wholeWord, includeXml, includeMeta, includeMods, layerByRelPath]);
+  }, [activeQuery, allFileContents, useWildcard, useRegex, matchCase, wholeWord, includeXml, includeMeta, includeMods, layerByRelPath, scopeFilter, currentFile, folderNameByRelPath]);
 
   const totalMatches = results.reduce((sum, g) => sum + g.matches.length, 0);
 
@@ -233,7 +268,7 @@ export default function GlobalSearch({
         kind: 'ok',
       });
     }
-  }, [query, replaceText, useWildcard, useRegex, matchCase, wholeWord, includeXml, includeMeta, allFileContents, onReplaceInFile, onReplaceBatch]);
+  }, [query, replaceText, useWildcard, useRegex, matchCase, wholeWord, includeXml, includeMeta, includeMods, layerByRelPath, scopeFilter, currentFile, folderNameByRelPath, allFileContents, onReplaceInFile, onReplaceBatch]);
 
   const handleReplaceInFile = useCallback((filePath) => {
     if (!activeQuery || !onReplaceInFile) return;
@@ -315,6 +350,26 @@ export default function GlobalSearch({
         >
           Search
         </button>
+        <select
+          value={scopeFilter}
+          onChange={(e) => onScopeFilterChange?.(e.target.value)}
+          title="Search scope"
+          style={{
+            minWidth: 160, padding: '3px 4px', fontSize: 11, cursor: 'pointer',
+            border: '1px solid var(--border)', borderRadius: 3,
+            background: 'var(--bg)', color: 'var(--text)',
+            fontFamily: 'inherit',
+          }}
+        >
+          <option value="all">All</option>
+          <option value="current-file">Current File</option>
+          <option value="current-folder">Current Folder</option>
+          <option value="current-package-folder">Current Package Folder</option>
+          <option value="current-package">Current Package</option>
+          <option value="base-game">Only Base Game</option>
+          <option value="dlcs">Only DLCs</option>
+          <option value="mods">Only Mods</option>
+        </select>
         <ToggleBtn active={useWildcard} onClick={() => { setUseWildcard(v => !v); if (!useWildcard) setUseRegex(false); }} title="Wildcard">*?</ToggleBtn>
         <ToggleBtn active={useRegex} onClick={() => { setUseRegex(v => !v); if (!useRegex) setUseWildcard(false); }} title="Regex">.*</ToggleBtn>
         <ToggleBtn active={matchCase} onClick={() => setMatchCase(v => !v)} title="Match Case">Aa</ToggleBtn>

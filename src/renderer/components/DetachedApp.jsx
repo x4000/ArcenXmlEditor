@@ -439,7 +439,7 @@ export default function DetachedApp({ windowId }) {
         if (!sel) sel = window.getSelection()?.toString()?.trim() || '';
         if (sel && sel.includes('\n')) sel = '';
         const isReplace = e.key === 'H' || e.key === 'h';
-        window.arcenApi.openGlobalSearch(sel, isReplace);
+        window.arcenApi.openGlobalSearch(sel, isReplace, tabs[activeTabIndex]?.relativePath || null);
       }
     };
     window.addEventListener('keydown', handler);

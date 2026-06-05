@@ -402,10 +402,14 @@ html, body, #root {
   background: var(--search-bg);
   color: var(--search-text);
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .sidebar-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 3px;

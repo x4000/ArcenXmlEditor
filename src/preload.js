@@ -124,9 +124,9 @@ contextBridge.exposeInMainWorld('arcenApi', {
   // Window-level state (tabs, sidebar, theme, etc.) — sync save to main process
   saveWindowState: (data) => ipcRenderer.sendSync('save-window-state', data),
   // Open global search in main window (from detached windows)
-  openGlobalSearch: (query, replace) => ipcRenderer.send('open-global-search', query, replace),
+  openGlobalSearch: (query, replace, currentFile) => ipcRenderer.send('open-global-search', query, replace, currentFile),
   onOpenGlobalSearch: (callback) => {
-    ipcRenderer.on('open-global-search', (_event, query, replace) => callback(query, replace));
+    ipcRenderer.on('open-global-search', (_event, query, replace, currentFile) => callback(query, replace, currentFile));
   },
   // Update detached window's active tab in registry
   setDetachedActiveTab: (index) => ipcRenderer.send('set-detached-active-tab', index),
