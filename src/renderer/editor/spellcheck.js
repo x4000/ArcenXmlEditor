@@ -517,6 +517,7 @@ export function createSpellcheckDecorations(getSchema, getSpellchecker, isSchema
     class {
       constructor(view) {
         this.view = view;
+        this.hadSchema = !!getSchema();
         this.decorations = this.buildDecorations(view);
         this.rebuildTimer = null;
       }
@@ -538,8 +539,13 @@ export function createSpellcheckDecorations(getSchema, getSpellchecker, isSchema
       // viewportChanged is not a trigger — decorations are positional
       // and CodeMirror clips them to the viewport itself.
       update(update) {
+        const hasSchema = !!getSchema();
+        const schemaArrived = hasSchema && !this.hadSchema;
+        this.hadSchema = hasSchema;
         if (update.docChanged) {
           this.decorations = this.decorations.map(update.changes);
+          this.scheduleRebuild();
+        } else if (schemaArrived) {
           this.scheduleRebuild();
         }
       }

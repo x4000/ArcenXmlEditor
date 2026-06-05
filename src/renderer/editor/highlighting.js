@@ -105,6 +105,7 @@ export function createSchemaDecorations(getSchema, theme) {
     class {
       constructor(view) {
         this.view = view;
+        this.hadSchema = !!getSchema();
         this.decorations = this.buildDecorations(view);
         this.rebuildTimer = null;
       }
@@ -128,9 +129,19 @@ export function createSchemaDecorations(getSchema, theme) {
       // viewportChanged is intentionally not a trigger: these decorations
       // are positional (RangeSetBuilder spans) and CodeMirror clips them
       // to the viewport itself, so scrolling doesn't need new data.
+      //
+      // Schema-arrival: if the editor mounted before schema was ready
+      // (detached window startup race), the host dispatches an empty
+      // transaction once schema loads. We detect the null→non-null
+      // transition and rebuild so FK underlines appear without a keystroke.
       update(update) {
+        const hasSchema = !!getSchema();
+        const schemaArrived = hasSchema && !this.hadSchema;
+        this.hadSchema = hasSchema;
         if (update.docChanged) {
           this.decorations = this.decorations.map(update.changes);
+          this.scheduleRebuild();
+        } else if (schemaArrived) {
           this.scheduleRebuild();
         }
       }

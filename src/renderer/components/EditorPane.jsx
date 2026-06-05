@@ -234,6 +234,23 @@ export default function EditorPane({
   const getFileExtraLayers = useCallback(() => fileExtraLayersRef.current, []);
   const getSpellchecker = useCallback(() => spellcheckerRef.current, []);
 
+  // When schema first becomes available after being null (detached window
+  // startup race: editor mounts before schema loads), dispatch an empty
+  // transaction to the CM view. This triggers the schema/spellcheck plugins'
+  // update() methods, which detect the null→non-null transition and rebuild
+  // their decorations — so FK underlines appear without requiring a keystroke.
+  const schemaAvailableRef = useRef(false);
+  useEffect(() => {
+    if (!mergedSchema) {
+      schemaAvailableRef.current = false;
+      return;
+    }
+    if (!schemaAvailableRef.current) {
+      schemaAvailableRef.current = true;
+      if (viewRef.current) viewRef.current.dispatch({});
+    }
+  });
+
   // Load file state from central registry (sync — always available immediately)
   const fileStateRef = useRef(null);
   const refPanelInitRef = useRef(false);
