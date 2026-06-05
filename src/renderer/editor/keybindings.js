@@ -22,6 +22,16 @@ function arcenInputHandler() {
     if (isInQuotes(doc, pos)) {
       const escapes = { '"': '&quot;', '<': '&lt;', '>': '&gt;' };
       if (escapes[ch]) {
+        if (ch === '"') {
+          // If the attribute is unterminated, let the '"' through as a closing quote.
+          // A '"' that opens a new attribute is always preceded by '=' (with optional space).
+          // If the next '"' ahead is preceded by '=', it's an opener for another attribute,
+          // meaning our current attribute has no closing quote yet.
+          const nextQuote = doc.indexOf('"', pos);
+          if (nextQuote === -1 || doc.slice(0, nextQuote).trimEnd().endsWith('=')) {
+            return false;
+          }
+        }
         const esc = escapes[ch];
         view.dispatch({
           changes: { from: pos, to: pos, insert: esc },
