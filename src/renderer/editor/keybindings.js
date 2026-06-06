@@ -8,6 +8,7 @@
  */
 
 import { EditorView } from '@codemirror/view';
+import { selectLine } from '@codemirror/commands';
 import { isInQuotes } from './xmlTokenizer';
 
 function arcenInputHandler() {
@@ -204,12 +205,89 @@ function goToLineHandler(view) {
   return true;
 }
 
+function toUpperCaseHandler(view) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const text = view.state.sliceDoc(sel.from, sel.to);
+  const upper = text.toUpperCase();
+  if (upper === text) return false;
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: upper },
+    selection: { anchor: sel.from, head: sel.from + upper.length },
+  });
+  return true;
+}
+
+function toLowerCaseHandler(view) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const text = view.state.sliceDoc(sel.from, sel.to);
+  const lower = text.toLowerCase();
+  if (lower === text) return false;
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: lower },
+    selection: { anchor: sel.from, head: sel.from + lower.length },
+  });
+  return true;
+}
+
+function toTitleCaseHandler(view) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const text = view.state.sliceDoc(sel.from, sel.to);
+  const titled = text.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  if (titled === text) return false;
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: titled },
+    selection: { anchor: sel.from, head: sel.from + titled.length },
+  });
+  return true;
+}
+
+function toUpperSnakeCaseHandler(view) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const text = view.state.sliceDoc(sel.from, sel.to);
+  const snake = text
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toUpperCase();
+  if (snake === text) return false;
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: snake },
+    selection: { anchor: sel.from, head: sel.from + snake.length },
+  });
+  return true;
+}
+
+function toSeparateWordsHandler(view) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const text = view.state.sliceDoc(sel.from, sel.to);
+  const words = text
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+  const result = words.charAt(0).toUpperCase() + words.slice(1);
+  if (result === text) return false;
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: result },
+    selection: { anchor: sel.from, head: sel.from + result.length },
+  });
+  return true;
+}
+
 export function createArcenKeymap() {
   return [
     { key: 'Enter', run: enterHandler },
     { key: 'Tab', run: tabHandler },
     { key: 'Shift-Tab', run: shiftTabHandler },
     { key: 'Mod-g', run: goToLineHandler, preventDefault: true },
+    { key: 'Ctrl-Shift-u', run: toUpperCaseHandler, preventDefault: true },
+    { key: 'Ctrl-u', run: toLowerCaseHandler, preventDefault: true },
+    { key: 'Mod-Shift-t', run: toTitleCaseHandler, preventDefault: true },
+    { key: 'Mod-l', run: selectLine, preventDefault: true },
+    { key: 'Mod-Shift-r', run: toUpperSnakeCaseHandler, preventDefault: true },
+    { key: 'Mod-Shift-e', run: toSeparateWordsHandler, preventDefault: true },
   ];
 }
 

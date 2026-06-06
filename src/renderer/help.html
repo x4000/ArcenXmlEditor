@@ -154,10 +154,26 @@ hotkeys: `<h1>Keyboard Shortcuts</h1>
 <h2>Editor</h2>
 <table>
 <tr><th>Shortcut</th><th>Action</th></tr>
-<tr><td><kbd>Tab</kbd></td><td>Insert tab character</td></tr>
-<tr><td><kbd>Shift+Tab</kbd></td><td>Remove one leading tab</td></tr>
+<tr><td><kbd>Tab</kbd></td><td>Insert tab character (or indent all selected lines)</td></tr>
+<tr><td><kbd>Shift+Tab</kbd></td><td>Remove one leading tab (or unindent all selected lines)</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>New line with auto-indent (no indent inside quotes)</td></tr>
 <tr><td><kbd>F2</kbd></td><td>Rename ID — when the cursor is on a central-identifier attribute value (e.g. <code>id="SomeName"</code>), opens a rename dialog that updates the ID and all FK references to it across every loaded file</td></tr>
+<tr><td><kbd>Ctrl+L</kbd></td><td>Select the current line</td></tr>
+<tr><td><kbd>Alt+Up</kbd> / <kbd>Alt+Down</kbd></td><td>Move current line up or down</td></tr>
+<tr><td><kbd>Shift+Alt+Up</kbd> / <kbd>Shift+Alt+Down</kbd></td><td>Duplicate current line above or below</td></tr>
+<tr><td><kbd>Ctrl+Shift+K</kbd></td><td>Delete the current line entirely</td></tr>
+<tr><td><kbd>Ctrl+/</kbd></td><td>Toggle XML comment (<code>&lt;!-- ... --&gt;</code>) around the selection or current line</td></tr>
+</table>
+
+<h2>Text Transforms</h2>
+<p>All transforms operate on the current selection. They do nothing if no text is selected.</p>
+<table>
+<tr><th>Shortcut</th><th>Action</th></tr>
+<tr><td><kbd>Ctrl+Shift+U</kbd></td><td>Convert selection to UPPERCASE</td></tr>
+<tr><td><kbd>Ctrl+U</kbd></td><td>Convert selection to lowercase</td></tr>
+<tr><td><kbd>Ctrl+Shift+T</kbd></td><td>Convert selection to Title Case</td></tr>
+<tr><td><kbd>Ctrl+Shift+R</kbd></td><td>Convert PascalCase selection to UPPER_SNAKE_CASE (also handles acronyms: <code>XMLParser</code> → <code>XML_PARSER</code>)</td></tr>
+<tr><td><kbd>Ctrl+Shift+E</kbd></td><td>Convert PascalCase selection to Separate Words (<code>CoolShipType</code> → <code>Cool Ship Type</code>; also handles acronyms: <code>XMLParser</code> → <code>XML Parser</code>)</td></tr>
 </table>
 
 <p>When text is selected and you press <kbd>Ctrl+F</kbd>, <kbd>Ctrl+Shift+F</kbd>, or their H variants, the selected text is automatically placed into the search field.</p>`,
