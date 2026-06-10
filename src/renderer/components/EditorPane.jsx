@@ -27,7 +27,7 @@ import { createClickHandler } from '../editor/clickHandler';
 import { createContextMenu, findSpellingErrorAtPos } from '../editor/contextMenu';
 import { classifyWordScript, asciifyHomoglyphs, getForbiddenCharFix } from '../editor/spellcheck';
 import { clampToViewport } from '../editor/menuUtils';
-import { createChangeGutter, setSavedContent, setVcsBaseContent } from '../editor/changeGutter';
+import { createChangeGutter, setSavedContent, setVcsBaseContent, changeMarkersField, vcsMarkersField } from '../editor/changeGutter';
 import { buildMergedSchema, getCentralIdentifierKey } from '../editor/schemaParser';
 import { getFKOptionsForLayer } from '../editor/fkIndex';
 import { createSpellcheckDecorations, isSpellcheckTarget, isInferredDevContext, isDevNotesAttr, buildNodeFlagRanges, isInRange } from '../editor/spellcheck';
@@ -457,7 +457,7 @@ export default function EditorPane({
       xml(),
       syntaxHighlighting(createArcenHighlighter(theme)),
       search({ top: true }),
-      createSearchScrollMarkers(),
+      createSearchScrollMarkers({ changedField: changeMarkersField, vcsField: vcsMarkersField }),
       ...createInSelectionExtension(),
       keymap.of([
         { key: 'Mod-h', run: (view) => {

@@ -104,7 +104,10 @@ const bothMarker = new BothMarker();
 // Each StateField holds a RangeSet of markers at line start positions.
 // They're recomputed by the async diff plugin (see below) and merged at
 // render time in the gutter() markers callback.
-const changeMarkersField = StateField.define({
+// Exported so the scrollbar overview markers (searchScrollMarkers.js) can
+// read the same per-line change sets the gutter draws — keeping the two
+// surfaces in lockstep. Consumers only ever READ positions from these.
+export const changeMarkersField = StateField.define({
   create() { return RangeSet.empty; },
   update(value, tr) {
     for (const effect of tr.effects) {
@@ -125,7 +128,7 @@ const changeMarkersField = StateField.define({
   },
 });
 
-const vcsMarkersField = StateField.define({
+export const vcsMarkersField = StateField.define({
   create() { return RangeSet.empty; },
   update(value, tr) {
     for (const effect of tr.effects) {
