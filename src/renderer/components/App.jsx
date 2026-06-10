@@ -1677,6 +1677,7 @@ export default function App() {
   // ── Update content ──
   const updateContent = useCallback((relativePath, newContent) => {
     setFileContents((prev) => ({ ...prev, [relativePath]: newContent }));
+    allFileContentsRef.current[relativePath] = newContent;
   }, []);
 
   // Helper: get single-line selected text from the editor
