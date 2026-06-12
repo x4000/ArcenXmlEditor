@@ -254,7 +254,7 @@ export default function TitleBar({ navState, onBack, onForward, mode, windowId, 
   return (
     <div className="title-bar">
       <img src="../../icons/icon.png" alt="" />
-      {mode !== 'detached' && (
+      {onBack && (
         <>
           <span
             style={navBtnStyle(navState?.canBack)}

@@ -13,6 +13,8 @@ import TitleBar from './TitleBar';
 import { fileDisplayName } from '../editor/layerDisplay';
 import GoToLineDialog from './GoToLineDialog';
 import GrammarSettings from './GrammarSettings';
+import RenameIdDialog from './RenameIdDialog';
+import { tokenize, buildAttrMap } from '../editor/xmlTokenizer';
 const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey, composeSchemaForFileLayer } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
@@ -20,6 +22,16 @@ import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '.
 import { buildLayerMaps } from '../editor/validation';
 import { validateXMLFile } from '../editor/validation';
 import NSpell from 'nspell';
+
+function replaceIdInValue(attrValue, oldId, newId) {
+  if (attrValue === oldId) return newId;
+  return attrValue.split(',').map(p => {
+    const trimmed = p.trim();
+    if (trimmed !== oldId) return p;
+    const idx = p.indexOf(trimmed);
+    return p.slice(0, idx) + newId + p.slice(idx + trimmed.length);
+  }).join(',');
+}
 
 export default function DetachedApp({ windowId }) {
   const [theme, setTheme] = useState('light');
@@ -76,6 +88,9 @@ export default function DetachedApp({ windowId }) {
   const activationHistoryRef = useRef([]);
   const [spellchecker, setSpellchecker] = useState(null);
   const spellcheckerRef = useRef(null);
+  const navHistoryRef = useRef({ list: [], pos: -1 });
+  const navSkipRef = useRef(false);
+  const [navState, setNavState] = useState({ canBack: false, canForward: false });
 
   // ── Startup: load shared state and restore tabs ──
   useEffect(() => {
@@ -445,6 +460,109 @@ export default function DetachedApp({ windowId }) {
     setFileContents(prev => ({ ...prev, [relativePath]: newContent }));
   }, []);
 
+  const captureSelectionNow = useCallback(() => {
+    const view = editorViewRef.current;
+    const tab = tabs[activeTabIndex];
+    if (view && tab) {
+      const sel = view.state.selection.main;
+      selectionStateRef.current[tab.relativePath] = { anchor: sel.anchor, head: sel.head };
+    }
+  }, [tabs, activeTabIndex]);
+
+  const navigateBack = useCallback(() => {
+    const nav = navHistoryRef.current;
+    if (nav.pos <= 0) return;
+    captureSelectionNow();
+    let newPos = nav.pos - 1;
+    while (newPos >= 0) {
+      const path = nav.list[newPos];
+      const idx = tabs.findIndex(t => t.relativePath === path);
+      if (idx >= 0) {
+        nav.pos = newPos;
+        navSkipRef.current = true;
+        setActiveTabIndex(idx);
+        setNavState({ canBack: newPos > 0, canForward: newPos < nav.list.length - 1 });
+        return;
+      }
+      nav.list.splice(newPos, 1);
+      nav.pos = Math.min(nav.pos, nav.list.length - 1);
+      newPos--;
+    }
+  }, [tabs, captureSelectionNow]);
+
+  const navigateForward = useCallback(() => {
+    const nav = navHistoryRef.current;
+    if (nav.pos >= nav.list.length - 1) return;
+    captureSelectionNow();
+    let newPos = nav.pos + 1;
+    while (newPos < nav.list.length) {
+      const path = nav.list[newPos];
+      const idx = tabs.findIndex(t => t.relativePath === path);
+      if (idx >= 0) {
+        nav.pos = newPos;
+        navSkipRef.current = true;
+        setActiveTabIndex(idx);
+        setNavState({ canBack: newPos > 0, canForward: newPos < nav.list.length - 1 });
+        return;
+      }
+      nav.list.splice(newPos, 1);
+    }
+  }, [tabs, captureSelectionNow]);
+
+  const handleIdRename = useCallback((oldId, newId, sourceRelPath) => {
+    const curSharedSchema = sharedSchemaRef.current;
+    if (!curSharedSchema) return;
+    const idKey = getCentralIdentifierKey(curSharedSchema);
+    const curSchemas = schemasRef.current;
+    const curFolderNames = folderNameByRelPathRef.current;
+    const tableName = curFolderNames.get(sourceRelPath);
+    if (!tableName) return;
+
+    const curFKIndex = fkIndexRef.current;
+    const tableEntry = curFKIndex[tableName] || curFKIndex[tableName.replace(/^\d+_/, '')];
+
+    const updates = {};
+    for (const [relPath, content] of Object.entries(allFileContentsRef.current)) {
+      if (!content) continue;
+      const folderName = curFolderNames.get(relPath);
+      const fileSchema = (folderName && curSchemas[folderName]) || null;
+      const fileMergedSchema = fileSchema && curSharedSchema
+        ? buildMergedSchema(curSharedSchema, fileSchema)
+        : fileSchema;
+      if (!fileMergedSchema) continue;
+
+      const attrs = buildAttrMap(tokenize(content), fileMergedSchema);
+      const toReplace = [];
+      for (const attr of attrs) {
+        if (attr.vs == null) continue;
+        const isCentralId = relPath === sourceRelPath && attr.nm === idKey && attr.v === oldId;
+        const isFK = !!attr.src && tableEntry &&
+          curFKIndex[attr.src] === tableEntry && (
+            attr.v === oldId || attr.v.split(',').some(p => p.trim() === oldId)
+          );
+        if (isCentralId || isFK) {
+          toReplace.push({ from: attr.vs, to: attr.ve, isList: attr.v !== oldId });
+        }
+      }
+      if (toReplace.length === 0) continue;
+
+      toReplace.sort((a, b) => b.from - a.from);
+      let updated = content;
+      for (const { from, to, isList } of toReplace) {
+        const oldVal = updated.slice(from, to);
+        const newVal = isList ? replaceIdInValue(oldVal, oldId, newId) : newId;
+        updated = updated.slice(0, from) + newVal + updated.slice(to);
+      }
+      updates[relPath] = updated;
+    }
+
+    if (Object.keys(updates).length === 0) return;
+    setFileContents(prev => ({ ...prev, ...updates }));
+    for (const [relPath, content] of Object.entries(updates)) {
+      allFileContentsRef.current[relPath] = content;
+    }
+  }, []);
+
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const handler = (e) => {
@@ -478,6 +596,35 @@ export default function DetachedApp({ windowId }) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [tabs, activeTabIndex, saveFile, diffTabIndex]);
+
+  // ── Back/forward navigation history tracking ──
+  useEffect(() => {
+    const tab = tabs[activeTabIndex];
+    if (tab && !navSkipRef.current) {
+      const nav = navHistoryRef.current;
+      if (nav.pos < nav.list.length - 1) {
+        nav.list = nav.list.slice(0, nav.pos + 1);
+      }
+      if (nav.list[nav.list.length - 1] !== tab.relativePath) {
+        nav.list.push(tab.relativePath);
+        if (nav.list.length > 50) nav.list.shift();
+      }
+      nav.pos = nav.list.length - 1;
+    }
+    navSkipRef.current = false;
+    const nav = navHistoryRef.current;
+    setNavState({ canBack: nav.pos > 0, canForward: nav.pos < nav.list.length - 1 });
+  }, [activeTabIndex, tabs]);
+
+  // ── Mouse button 4/5 for back/forward ──
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.button === 3) { e.preventDefault(); navigateBack(); }
+      if (e.button === 4) { e.preventDefault(); navigateForward(); }
+    };
+    window.addEventListener('mouseup', handler);
+    return () => window.removeEventListener('mouseup', handler);
+  }, [navigateBack, navigateForward]);
 
   // ── On tab select, tell main window to scroll sidebar + update registry ──
   useEffect(() => {
@@ -737,12 +884,16 @@ export default function DetachedApp({ windowId }) {
       onDrop={handleDrop}
     >
       <TitleBar
+        navState={navState}
+        onBack={navigateBack}
+        onForward={navigateForward}
         mode="detached"
         windowId={windowId}
         activeFileName={activeTab ? fileDisplayName(activeTab.relativePath.split('/').pop()) : null}
       />
       <GoToLineDialog />
       <GrammarSettings />
+      <RenameIdDialog onConfirm={handleIdRename} />
       <div className="app-container">
         <div className="main-area">
           <TabBar
