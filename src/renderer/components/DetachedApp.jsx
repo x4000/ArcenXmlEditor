@@ -48,6 +48,12 @@ export default function DetachedApp({ windowId }) {
 
   const allFileContentsRef = useRef({});
   const schemasRef = useRef({});
+  // "Island" data files (self-contained extra data sources, decoded from YAML
+  // by the main process). relPath → standalone schema. State, not a ref, so the
+  // composedMergedSchema memo recomputes when islands finish loading. Mirrors
+  // App.jsx — see [[detached-window-parity]].
+  const [islandSchemaByRelPath, setIslandSchemaByRelPath] = useState(() => new Map());
+  const islandRelPathsRef = useRef(new Set()); // island data files → view-only save guard
   const sharedSchemaRef = useRef(null);
   const fkIndexRef = useRef({});
   const lookupSwapsRef = useRef({});
@@ -151,6 +157,31 @@ export default function DetachedApp({ windowId }) {
         } catch (_) {}
       }
       setSchemaExtensions(extensionsMap);
+
+      // Parse island standalone schemas, indexed by each island data file's
+      // relPath. The decode itself happens in the main process (read-file), so
+      // a detached island tab shows decoded XML regardless; this just feeds the
+      // schema for highlighting/autocomplete. Mirrors App.jsx loadIslands.
+      {
+        const islandMap = new Map();
+        for (const isl of (data.islands || [])) {
+          let parsed = null;
+          try {
+            const txt = await window.arcenApi.readFile(isl.metadataRelPath);
+            parsed = parseMetadata(txt, isl.name);
+          } catch (_) {}
+          if (!parsed) continue;
+          for (const f of (isl.files || [])) islandMap.set(f.relativePath, parsed);
+        }
+        // Data-file relPaths (even from islands whose metadata failed to parse)
+        // for the view-only save guard.
+        const relSet = new Set();
+        for (const isl of (data.islands || [])) {
+          for (const f of (isl.files || [])) relSet.add(f.relativePath);
+        }
+        islandRelPathsRef.current = relSet;
+        setIslandSchemaByRelPath(islandMap);
+      }
 
       const bulk = {};
       for (const folder of data.folders) {
@@ -446,6 +477,23 @@ export default function DetachedApp({ windowId }) {
 
   // ── Save ──
   const saveFile = useCallback(async (relativePath) => {
+    // Island embedded-XML files: main re-encodes the edited XML into the YAML.
+    // Skip the FK-index fold (islands aren't in the index). Mirrors App.jsx.
+    if (islandRelPathsRef.current.has(relativePath)) {
+      const islandContent = fileContents[relativePath];
+      if (islandContent === undefined) return;
+      try {
+        await window.arcenApi.writeFile(relativePath, islandContent);
+      } catch (e) {
+        try { globalThis.alert?.(`Could not save ${relativePath}: ${e?.message || e}`); } catch (_) {}
+        return;
+      }
+      setSavedContents(prev => ({ ...prev, [relativePath]: islandContent }));
+      allFileContentsRef.current[relativePath] = islandContent;
+      recentSavesRef.current.add(relativePath);
+      setTimeout(() => recentSavesRef.current.delete(relativePath), 5000);
+      return;
+    }
     const content = fileContents[relativePath];
     if (content === undefined) return;
     await window.arcenApi.writeFile(relativePath, content);
@@ -675,6 +723,10 @@ export default function DetachedApp({ windowId }) {
   // schema itself when this is null (metadata tabs, pre-load).
   const composedMergedSchema = useMemo(() => {
     if (!activeTab || activeTab.type === 'schema') return null;
+    // Island data file: its standalone schema IS the merged schema (no shared
+    // merge, no layer compose). Checked first so islands render without shared.
+    const islandSchema = islandSchemaByRelPath.get(activeTab.relativePath);
+    if (islandSchema) return islandSchema;
     const shared = sharedSchemaRef.current;
     if (!shared || !activeSchema) return null;
     const merged = buildMergedSchema(shared, activeSchema);
@@ -682,7 +734,7 @@ export default function DetachedApp({ windowId }) {
     const folderName = activeSchema.folderName || folderNameOf(activeTab.relativePath);
     const layer = layerByRelPath.get(activeTab.relativePath)?.layer || 'base';
     return composeSchemaForFileLayer(merged, schemaExtensions, layerMapsRef.current.modExtrasByLayer, layer, folderName);
-  }, [activeTab, activeSchema, schemaExtensions, layerByRelPath]);
+  }, [activeTab, activeSchema, schemaExtensions, layerByRelPath, islandSchemaByRelPath]);
 
   // Ctrl+click navigation — same shared implementation the main window uses, so
   // detached windows are no longer dead-ended on these (they previously wired

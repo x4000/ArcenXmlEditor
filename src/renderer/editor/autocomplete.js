@@ -146,8 +146,10 @@ function arcenCompletionSource(getSchema, onFKComplete) {
           const def = findAttrDefInContext(schema, label, contextName);
           const isBool = def && (def.type === 'bool' || def.type === 'int-bool');
           const isFK = def && (def.type === 'node-dropdown' || def.type === 'node-list');
-          // string-dropdown opens the same picker as FK after completion.
+          // string-dropdown and local-dropdown open the same picker as FK after
+          // completion (the host resolves their options).
           const isStringDropdown = def && def.type === 'string-dropdown';
+          const isLocalDropdown = def && def.type === 'local-dropdown';
           const defaultVal = isBool ? (def.type === 'bool' ? 'true' : '1') : '';
 
           return {
@@ -169,8 +171,8 @@ function arcenCompletionSource(getSchema, onFKComplete) {
                   changes: { from, to, insert },
                   selection: { anchor: cursorPos },
                 });
-                // If FK or string-dropdown, trigger the picker.
-                if ((isFK || isStringDropdown) && onFKComplete) {
+                // If FK / string-dropdown / local-dropdown, trigger the picker.
+                if ((isFK || isStringDropdown || isLocalDropdown) && onFKComplete) {
                   setTimeout(() => onFKComplete(view, def, cursorPos), 20);
                 }
               }

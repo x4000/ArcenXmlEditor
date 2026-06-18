@@ -258,6 +258,128 @@ export function findAttrDef(schema, name) {
   return findAttrDefInContext(schema, name, null);
 }
 
+// ─── Local keys (structurally-scoped, self-FK) ───────────────────────
+//
+// Some schemas (e.g. the MotionSet/locomotion island) declare ids that are
+// "local": an `id` typed `local_key` on a sub_node defines a key, referenced by
+// `local-dropdown` / `local-list` attributes whose `local_source` names the
+// defining sub_node type. These never enter the global FK index.
+//
+// SCOPE is structural, not file-wide: a reference resolves to the local keys of
+// the NEAREST ANCESTOR that directly contains nodes of the `local_source` type.
+// So a <transition>'s `to` resolves to the <state> ids of its own
+// <state_machine> (states in a sibling machine are out of scope), while a
+// <state_machine>'s `id` (local_source="channel") resolves to the <channel> ids
+// of the enclosing <motion_set>. The same id may repeat in another machine.
+
+/**
+ * Build a lightweight element tree for local-key resolution. Returns
+ *   { elementAt(pos) -> node|null }
+ * where each node = { tag, tagPos, start, end, parent, children:[], localKey }.
+ * Cheap no-op (no token walk) when the schema declares no `local_key`
+ * attributes, so it's inert for normal data tables.
+ */
+export function buildLocalKeyIndex(tokens, schema) {
+  const empty = { elementAt: () => null };
+  if (!schema) return empty;
+  const keyAttrByType = new Map();
+  for (const sn of schema.subNodes || []) {
+    const ka = (sn.attributes || []).find((a) => a.type === 'local_key');
+    if (ka) keyAttrByType.set(sn.id, ka.key);
+  }
+  if (keyAttrByType.size === 0) return empty;
+
+  const root = { tag: '#root', tagPos: 0, start: 0, end: Infinity, parent: null, children: [], localKey: null };
+  let cur = root;
+  const all = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tk = tokens[i];
+    if (tk.c === 'br' && tk.s === '<' && i + 1 < tokens.length && tokens[i + 1].c === 'tg') {
+      const tag = tokens[i + 1].s;
+      const tagPos = tokens[i + 1].p;
+      let selfClose = false;
+      let gtPos = tagPos + tag.length;
+      for (let j = i + 2; j < tokens.length; j++) {
+        if (tokens[j].c === 'br' && tokens[j].s === '/>') { selfClose = true; gtPos = tokens[j].p + 2; break; }
+        if (tokens[j].c === 'br' && tokens[j].s === '>') { gtPos = tokens[j].p + 1; break; }
+      }
+      const node = { tag, tagPos, start: tk.p, end: selfClose ? gtPos : Infinity, parent: cur, children: [], localKey: null };
+      if (keyAttrByType.has(tag)) {
+        const keyAttr = keyAttrByType.get(tag);
+        for (let j = i + 2; j < tokens.length; j++) {
+          if (tokens[j].c === 'br' && (tokens[j].s === '>' || tokens[j].s === '/>')) break;
+          if (tokens[j].c === 'an' && tokens[j].s === keyAttr) {
+            for (let k = j + 1; k < Math.min(j + 4, tokens.length); k++) {
+              if (tokens[k].c === 'av') { node.localKey = tokens[k].s; break; }
+            }
+            break;
+          }
+        }
+      }
+      cur.children.push(node);
+      all.push(node);
+      if (!selfClose) cur = node;
+    } else if (tk.c === 'br' && tk.s === '</' && i + 1 < tokens.length && tokens[i + 1].c === 'tg') {
+      const tag = tokens[i + 1].s;
+      // Close the matching open element in the ancestor chain.
+      let n = cur;
+      while (n && n.tag !== tag) n = n.parent;
+      if (n && n !== root) {
+        let endPos = tokens[i + 1].p + tag.length;
+        for (let j = i + 2; j < tokens.length; j++) {
+          if (tokens[j].c === 'br' && tokens[j].s === '>') { endPos = tokens[j].p + 1; break; }
+          if (tokens[j].c === 'br' && tokens[j].s === '<') break;
+        }
+        n.end = endPos;
+        cur = n.parent || root;
+      }
+    }
+  }
+
+  // Innermost element whose [start, end) contains pos (largest start wins,
+  // since a child's tag starts after its parent's).
+  const elementAt = (pos) => {
+    let best = null;
+    for (const n of all) {
+      if (pos >= n.start && pos < n.end && (!best || n.start > best.start)) best = n;
+    }
+    return best;
+  };
+  return { elementAt };
+}
+
+// Walk up from the element at `pos` to the nearest ancestor that DIRECTLY
+// contains children of tag `type` with a local key — that ancestor is the scope.
+function localScopeChildren(index, pos, type) {
+  if (!index.elementAt) return null;
+  let el = index.elementAt(pos);
+  while (el) {
+    const kids = el.children.filter((c) => c.tag === type && c.localKey != null);
+    if (kids.length) return kids;
+    el = el.parent;
+  }
+  return null;
+}
+
+/** Distinct local-key values of `type` in scope at `pos` (nearest enclosing owner). */
+export function localKeyValuesInScope(index, pos, type) {
+  const kids = localScopeChildren(index, pos, type);
+  if (!kids) return [];
+  const seen = new Set();
+  const out = [];
+  for (const k of kids) { if (!seen.has(k.localKey)) { seen.add(k.localKey); out.push(k.localKey); } }
+  return out;
+}
+
+/** Tag-name position of the in-scope element defining local key `value` of `type`, or null. */
+export function findLocalKeyDefPos(index, pos, type, value) {
+  const kids = localScopeChildren(index, pos, type);
+  if (!kids) return null;
+  const hit = kids.find((k) => k.localKey === value);
+  return hit ? hit.tagPos : null;
+}
+
 /**
  * Check if position is inside quotes.
  */

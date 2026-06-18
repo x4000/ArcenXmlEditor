@@ -174,6 +174,8 @@ hotkeys: `<h1>Keyboard Shortcuts</h1>
 <tr><td><kbd>Ctrl+Shift+T</kbd></td><td>Convert selection to Title Case</td></tr>
 <tr><td><kbd>Ctrl+Shift+R</kbd></td><td>Convert PascalCase selection to UPPER_SNAKE_CASE (also handles acronyms: <code>XMLParser</code> → <code>XML_PARSER</code>)</td></tr>
 <tr><td><kbd>Ctrl+Shift+E</kbd></td><td>Convert PascalCase selection to Separate Words (<code>CoolShipType</code> → <code>Cool Ship Type</code>; also handles acronyms: <code>XMLParser</code> → <code>XML Parser</code>)</td></tr>
+<tr><td><kbd>Ctrl+Shift+1</kbd></td><td>Condense the selected nodes — collapse each outer node onto a single line (its children joined with no whitespace between them), while preserving each outer node's own indentation and leaving one line per node. For example, a <code>&lt;transition&gt;</code> with a child <code>&lt;when_flag/&gt;</code> on separate indented lines becomes <code>&lt;transition ...&gt;&lt;when_flag .../&gt;&lt;/transition&gt;</code> on one line. Operates on whole lines covering the selection.</td></tr>
+<tr><td><kbd>Ctrl+Shift+2</kbd></td><td>Condense the selected siblings onto a single line — like <kbd>Ctrl+Shift+1</kbd> but also removes the whitespace BETWEEN the nodes, keeping only the leading indentation. For example three <code>&lt;cell/&gt;</code> elements on separate lines become <code>&lt;cell .../&gt;&lt;cell .../&gt;&lt;cell .../&gt;</code> on one line.</td></tr>
 </table>
 
 <p>When text is selected and you press <kbd>Ctrl+F</kbd>, <kbd>Ctrl+Shift+F</kbd>, or their H variants, the selected text is automatically placed into the search field.</p>`,

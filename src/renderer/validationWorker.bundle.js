@@ -12287,6 +12287,105 @@
     if (topAttr) return topAttr;
     return null;
   }
+  function buildLocalKeyIndex(tokens, schema) {
+    const empty = { elementAt: () => null };
+    if (!schema) return empty;
+    const keyAttrByType = /* @__PURE__ */ new Map();
+    for (const sn of schema.subNodes || []) {
+      const ka = (sn.attributes || []).find((a) => a.type === "local_key");
+      if (ka) keyAttrByType.set(sn.id, ka.key);
+    }
+    if (keyAttrByType.size === 0) return empty;
+    const root = { tag: "#root", tagPos: 0, start: 0, end: Infinity, parent: null, children: [], localKey: null };
+    let cur = root;
+    const all = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tk = tokens[i];
+      if (tk.c === "br" && tk.s === "<" && i + 1 < tokens.length && tokens[i + 1].c === "tg") {
+        const tag = tokens[i + 1].s;
+        const tagPos = tokens[i + 1].p;
+        let selfClose = false;
+        let gtPos = tagPos + tag.length;
+        for (let j = i + 2; j < tokens.length; j++) {
+          if (tokens[j].c === "br" && tokens[j].s === "/>") {
+            selfClose = true;
+            gtPos = tokens[j].p + 2;
+            break;
+          }
+          if (tokens[j].c === "br" && tokens[j].s === ">") {
+            gtPos = tokens[j].p + 1;
+            break;
+          }
+        }
+        const node = { tag, tagPos, start: tk.p, end: selfClose ? gtPos : Infinity, parent: cur, children: [], localKey: null };
+        if (keyAttrByType.has(tag)) {
+          const keyAttr = keyAttrByType.get(tag);
+          for (let j = i + 2; j < tokens.length; j++) {
+            if (tokens[j].c === "br" && (tokens[j].s === ">" || tokens[j].s === "/>")) break;
+            if (tokens[j].c === "an" && tokens[j].s === keyAttr) {
+              for (let k = j + 1; k < Math.min(j + 4, tokens.length); k++) {
+                if (tokens[k].c === "av") {
+                  node.localKey = tokens[k].s;
+                  break;
+                }
+              }
+              break;
+            }
+          }
+        }
+        cur.children.push(node);
+        all.push(node);
+        if (!selfClose) cur = node;
+      } else if (tk.c === "br" && tk.s === "</" && i + 1 < tokens.length && tokens[i + 1].c === "tg") {
+        const tag = tokens[i + 1].s;
+        let n = cur;
+        while (n && n.tag !== tag) n = n.parent;
+        if (n && n !== root) {
+          let endPos = tokens[i + 1].p + tag.length;
+          for (let j = i + 2; j < tokens.length; j++) {
+            if (tokens[j].c === "br" && tokens[j].s === ">") {
+              endPos = tokens[j].p + 1;
+              break;
+            }
+            if (tokens[j].c === "br" && tokens[j].s === "<") break;
+          }
+          n.end = endPos;
+          cur = n.parent || root;
+        }
+      }
+    }
+    const elementAt = (pos) => {
+      let best = null;
+      for (const n of all) {
+        if (pos >= n.start && pos < n.end && (!best || n.start > best.start)) best = n;
+      }
+      return best;
+    };
+    return { elementAt };
+  }
+  function localScopeChildren(index, pos, type) {
+    if (!index.elementAt) return null;
+    let el = index.elementAt(pos);
+    while (el) {
+      const kids = el.children.filter((c) => c.tag === type && c.localKey != null);
+      if (kids.length) return kids;
+      el = el.parent;
+    }
+    return null;
+  }
+  function localKeyValuesInScope(index, pos, type) {
+    const kids = localScopeChildren(index, pos, type);
+    if (!kids) return [];
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const k of kids) {
+      if (!seen.has(k.localKey)) {
+        seen.add(k.localKey);
+        out.push(k.localKey);
+      }
+    }
+    return out;
+  }
 
   // src/renderer/editor/schemaParser.js
   function buildMergedSchema(sharedSchema, tableSchema) {
@@ -12327,7 +12426,7 @@
       for (const sn of ext.subNodes || []) {
         const existingIdx = sn.id != null ? subNodeIndexById.get(sn.id) : void 0;
         if (existingIdx == null) {
-          subNodes.push({ id: sn.id || "", attributes: [...sn.attributes || []] });
+          subNodes.push({ id: sn.id || "", tooltip: sn.tooltip, attributes: [...sn.attributes || []] });
           subNodeIndexById.set(sn.id, subNodes.length - 1);
         } else {
           const target = subNodes[existingIdx];
@@ -24658,6 +24757,7 @@
     const lines = content.split("\n");
     const tokens = tokenize(content);
     const attrMap = buildAttrMap(tokens, mergedSchema);
+    const localKeyIndex = buildLocalKeyIndex(tokens, mergedSchema);
     function lineAt2(pos) {
       let line = 1;
       let p = 0;
@@ -24943,6 +25043,22 @@
             let msg = `Invalid lang-string reference: "${attr.v}" not found in Language table`;
             if (swapValid) msg += `. LookupSwaps indicates you might mean: ${swapped}?`;
             errors.push({ severity: "error", file: relativePath, line, message: msg });
+          }
+        }
+      }
+      if ((attr.tp === "local-dropdown" || attr.tp === "local-list") && attr.d?.local_source && attr.v) {
+        const srcType = attr.d.local_source;
+        const valid = new Set(localKeyValuesInScope(localKeyIndex, attr.ns2, srcType));
+        const vals = attr.tp === "local-list" ? attr.v.split(",").map((s) => s.trim()).filter(Boolean) : [attr.v];
+        for (const val of vals) {
+          if (!val || val === "None") continue;
+          if (!valid.has(val)) {
+            errors.push({
+              severity: "error",
+              file: relativePath,
+              line,
+              message: `Invalid local reference: "${val}" is not a <${srcType}> id defined in this <${mergedSchema.nodeName}>`
+            });
           }
         }
       }

@@ -512,6 +512,17 @@ let watcher = null;
 let recentSaves = new Set();
 let fileMtimes = new Map();
 let lastSaveTime = 0;
+// Absolute paths of "island" embedded-XML data files (e.g. Unity .asset YAML
+// whose editable XML lives in the `xml:` field). Rebuilt every discovery.
+// `read-file` consults this to decode the embedded XML transparently. See
+// discoverExtraDataSources() and the island branch in the read-file handler.
+let islandEmbeddedAbsPaths = new Set();
+// Island folder directories (for the file watcher to cover) and the full set of
+// island file abs paths — data files + each island's `.metadata` — for change
+// detection (mtime snapshot / focus-recheck). Islands live OUTSIDE the normal
+// layer dirs, so they need to be added explicitly.
+let islandFolderDirs = [];
+let islandTrackedAbsPaths = new Set();
 let lastValidatorBounds = null;
 let lastHelpBounds = null;
 
@@ -940,6 +951,32 @@ function createHelpWindow() {
 //   - ../...                       (path leaving DATA_ROOT — workshop mods,
 //                                   whose Steam install dir is outside it)
 // Only the base layer needs the suite↔narrow prefix shuffle.
+// Directory prefixes (DATA_ROOT-relative, trailing-slash) declared in
+// _extraDataSources.txt — the roots under which "island" data sources live.
+// Island paths sit at DATA_ROOT level (layout-independent), so the session
+// path-rebaser must NOT glue the base-layer prefix onto them. Cached per
+// baseDir (read at session-load time, when currentLayout is set but discovery
+// may not have run yet, so we read the file directly rather than rely on the
+// discovered island list).
+let _extraSourcePrefixes = null;
+let _extraSourcePrefixesKey = null;
+function getExtraDataSourceRelPrefixes() {
+  const key = currentLayout ? currentLayout.baseDir : null;
+  if (!key) return [];
+  if (_extraSourcePrefixesKey === key && _extraSourcePrefixes) return _extraSourcePrefixes;
+  const out = [];
+  try {
+    const txt = fs.readFileSync(path.join(currentLayout.baseDir, '_extraDataSources.txt'), 'utf-8');
+    for (const line of txt.split(/\r\n?|\n/)) {
+      const rel = line.trim().replace(/^\.\//, '').replace(/[/\\]+$/, '');
+      if (rel) out.push(rel + '/');
+    }
+  } catch (_) { /* no extra sources */ }
+  _extraSourcePrefixes = out;
+  _extraSourcePrefixesKey = key;
+  return out;
+}
+
 function rebaseToCurrentLayout(p) {
   if (typeof p !== 'string' || !p || !currentLayout) return p;
   const SUITE_PREFIX = SUITE_BASE_REL + '/';
@@ -956,6 +993,12 @@ function rebaseToCurrentLayout(p) {
       || bare.startsWith('XMLMods_NonDistributed/')
       || bare.startsWith('../')) {
     return bare;
+  }
+  // Island (extra-data-source) paths are layout-independent too. (The strip
+  // above also recovers an island path a buggy earlier build saved with the
+  // base prefix glued on.)
+  for (const pre of getExtraDataSourceRelPrefixes()) {
+    if (bare.startsWith(pre)) return bare;
   }
   const prefix = currentLayout.baseRel ? currentLayout.baseRel + '/' : '';
   return prefix + bare;
@@ -1190,6 +1233,11 @@ function* iterateAllDataFiles() {
       }
     }
   }
+  // Island files (data + metadata) live outside the layer dirs — include them so
+  // the focus-recheck detects external (e.g. Unity) edits to them.
+  for (const abs of islandTrackedAbsPaths) {
+    yield { rel: relFromRoot(abs), abs };
+  }
 }
 
 function snapshotMtimes() {
@@ -1290,12 +1338,249 @@ function scanLayerDirectory(layerDir) {
   return { tables, stray };
 }
 
+// ─── Extra data sources ("islands") ──────────────────────────────────
+//
+// Self-contained data sources OUTSIDE GameData/Configuration. A file
+// `_extraDataSources.txt` in the base (Configuration) dir lists directories,
+// one per line, DATA_ROOT-relative. Each immediate subfolder of a listed dir
+// that contains a `_<Name>.metadata` is an island: a standalone schema that
+// does NOT merge with SharedMetaData and does NOT join the FK index. The
+// island's metadata root may carry `is_from_yaml_extension="<ext>"`, meaning
+// its data files are `<ext>` files (e.g. Unity .asset YAML) whose editable XML
+// is embedded (escaped + YAML line-folded) in a top-level `xml:` field. Unity
+// `.meta` sidecars are always ignored.
+
+// Cheap read of a .metadata file's <root> attributes — discovery only needs
+// node_name + is_from_yaml_extension, so we don't do a full parse here.
+function readMetadataRootAttrs(absPath) {
+  let text;
+  try { text = fs.readFileSync(absPath, 'utf-8'); }
+  catch (e) { return null; }
+  // Strip comments first — the metadata's doc comment can contain a literal
+  // `<root><motion_set>…` example that would otherwise match before the real
+  // root element (which carries node_name / is_from_yaml_extension).
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  const m = text.match(/<root\b([^>]*)>/);
+  if (!m) return { nodeName: '', embedExtension: null };
+  const nn = m[1].match(/\bnode_name\s*=\s*"([^"]*)"/);
+  const ye = m[1].match(/\bis_from_yaml_extension\s*=\s*"([^"]*)"/);
+  return { nodeName: nn ? nn[1] : '', embedExtension: (ye && ye[1]) ? ye[1] : null };
+}
+
+// Discover island data sources. Returns { islands, errors }; errors are raw
+// structural-error records for missing/unreadable listed directories.
+function discoverExtraDataSources() {
+  const islands = [];
+  const errors = [];
+  if (!DATA_ROOT || !currentLayout) return { islands, errors };
+
+  const listFile = path.join(currentLayout.baseDir, '_extraDataSources.txt');
+  let listText;
+  try { listText = fs.readFileSync(listFile, 'utf-8'); }
+  catch (e) { return { islands, errors }; } // no extra sources declared — fine
+
+  const lines = listText.split(/\r\n?|\n/).map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    // DATA_ROOT-relative; tolerate a leading "./" and a trailing slash.
+    const rel = line.replace(/^\.\//, '').replace(/[/\\]+$/, '');
+    const absDir = path.join(DATA_ROOT, rel);
+    let stat = null;
+    try { stat = fs.statSync(absDir); } catch (e) { /* missing */ }
+    if (!stat || !stat.isDirectory()) {
+      errors.push({ kind: 'extra-source-missing', dir: line, relPath: rel });
+      continue;
+    }
+
+    let subEntries;
+    try { subEntries = fs.readdirSync(absDir, { withFileTypes: true }); }
+    catch (e) { continue; }
+
+    for (const sub of subEntries) {
+      if (!sub.isDirectory()) continue;
+      const folderPath = path.join(absDir, sub.name);
+      let files;
+      try { files = fs.readdirSync(folderPath); }
+      catch (e) { continue; }
+
+      // Island iff a `_*.metadata` (NOT a Unity `*.metadata.meta`) is present.
+      const metaFile = files.find((f) => f.endsWith('.metadata'));
+      if (!metaFile) continue; // subfolder without a schema → ignored, per spec
+
+      const metadataPath = path.join(folderPath, metaFile);
+      const rootAttrs = readMetadataRootAttrs(metadataPath) || {};
+      const embedExtension = rootAttrs.embedExtension; // e.g. "asset" or null
+
+      // Data files: with an embed extension, match that extension; otherwise
+      // plain `.xml`. Always exclude Unity `.meta` sidecars and the metadata.
+      const dataFiles = [];
+      for (const f of files) {
+        if (f.endsWith('.meta') || f.endsWith('.metadata')) continue;
+        const matches = embedExtension ? f.endsWith('.' + embedExtension) : f.endsWith('.xml');
+        if (!matches) continue;
+        const abs = path.join(folderPath, f);
+        dataFiles.push({ name: f, path: abs, relativePath: relFromRoot(abs) });
+      }
+      dataFiles.sort((a, b) => _naturalCollator.compare(a.name, b.name));
+
+      islands.push({
+        name: sub.name,
+        nodeName: rootAttrs.nodeName || '',
+        folderPath,
+        folderRelPath: relFromRoot(folderPath),
+        metadataFile: metaFile,
+        metadataPath,
+        metadataRelPath: relFromRoot(metadataPath),
+        embedExtension: embedExtension || null,
+        files: dataFiles,
+      });
+    }
+  }
+
+  islands.sort((a, b) => _naturalCollator.compare(a.name, b.name));
+  return { islands, errors };
+}
+
+// ─── Embedded-XML (Unity .asset YAML) decode ─────────────────────────
+//
+// The editable XML lives in a top-level double-quoted YAML scalar `xml: "..."`,
+// heavily escaped (\" \n \\ ...) and line-folded across physical lines for
+// width. We decode it for display; the outer YAML is left untouched (write-back
+// / re-encode is a later milestone).
+
+// Locate the `xml:` double-quoted scalar. Returns { start, end, raw } for the
+// content BETWEEN the quotes (offsets into `text`, kept for future write-back),
+// or null.
+function findYamlXmlScalar(text) {
+  const km = /(^|\n)[ \t]*xml:[ \t]*"/.exec(text);
+  if (!km) return null;
+  const open = km.index + km[0].length - 1; // the opening quote
+  let i = open + 1;
+  while (i < text.length) {
+    if (text[i] === '\\') { i += 2; continue; }
+    if (text[i] === '"') break;
+    i++;
+  }
+  if (i >= text.length) return null;
+  return { start: open + 1, end: i, raw: text.slice(open + 1, i) };
+}
+
+// Un-wrap a YAML double-quoted scalar that was physically line-folded for width.
+//
+// Unity wraps such a scalar AT a content whitespace: it leaves the content
+// indentation as TRAILING spaces (right after a \n escape), CONSUMES exactly one
+// space as the physical break, and indents the continuation line with a fixed
+// "wrap indent". To recover the original string value we, for each continuation
+// physical line: strip its leading wrap-indent, keep the previous line's trailing
+// content indent, and add back the single break space. This reconstructs the
+// user's indentation faithfully (verified to restore clean, even indentation),
+// rather than the spec's lossy "strip both sides + one space" which collapsed
+// indentation to a single space at every wrap point.
+//
+// Content NEWLINES are `\n` escapes (literal backslash-n) — they are NOT physical
+// breaks, so they survive untouched here and are decoded later by unescape. A
+// single-line scalar (what AXE writes) has no physical breaks, so this returns it
+// verbatim — making the AXE save→load round-trip exact.
+function unfoldYamlFlowScalar(s) {
+  const lines = s.split('\n');
+  let out = lines[0];
+  for (let k = 1; k < lines.length; k++) {
+    const stripped = lines[k].replace(/^[ \t]+/, '');
+    if (stripped === '') continue; // a truly blank physical line (shouldn't occur)
+    out += ' ' + stripped;
+  }
+  return out;
+}
+
+// Process YAML double-quoted escape sequences.
+function unescapeYamlDoubleQuoted(s) {
+  return s.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (mm, g) => {
+    if (g[0] === 'u' || g[0] === 'x') return String.fromCharCode(parseInt(g.slice(1), 16));
+    switch (g) {
+      case 'n': return '\n'; case 't': return '\t'; case 'r': return '\r';
+      case '"': return '"'; case '\\': return '\\'; case '/': return '/';
+      case '0': return '\0'; case 'b': return '\b'; case 'f': return '\f';
+      default: return g;
+    }
+  });
+}
+
+// Pretty-print element-only XML (no significant text nodes) with 2-space indent.
+// The island XML is entirely tags + attributes, so collapsing inter-tag
+// whitespace and re-indenting by depth is lossless for content — and it undoes
+// the YAML folding's condensed indentation. Tag text (names + attributes) is
+// preserved verbatim; any non-whitespace text node is kept attached so we never
+// silently drop data.
+function prettyPrintElementXml(xml) {
+  const pieces = [];
+  const re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<\/?[^>]+>/g;
+  let m, lastIndex = 0;
+  while ((m = re.exec(xml)) !== null) {
+    const between = xml.slice(lastIndex, m.index);
+    if (between.trim().length > 0) pieces.push({ type: 'text', s: between.trim() });
+    pieces.push({ type: 'markup', s: m[0] });
+    lastIndex = re.lastIndex;
+  }
+  const tail = xml.slice(lastIndex);
+  if (tail.trim().length > 0) pieces.push({ type: 'text', s: tail.trim() });
+
+  const out = [];
+  let depth = 0;
+  const indent = () => '  '.repeat(Math.max(0, depth));
+  for (const p of pieces) {
+    if (p.type === 'text') { out.push(indent() + p.s); continue; }
+    const s = p.s;
+    const isDeclOrComment = s.startsWith('<?') || s.startsWith('<!');
+    const isClose = /^<\//.test(s);
+    const isSelfClose = isDeclOrComment || /\/>$/.test(s);
+    if (isClose) depth = Math.max(0, depth - 1);
+    out.push(indent() + s);
+    if (!isClose && !isSelfClose) depth++;
+  }
+  return out.join('\n') + '\n';
+}
+
+// Decode the embedded XML from a Unity-YAML island data file's raw text, or null
+// if no `xml:` field is found. We faithfully reconstruct the stored string value
+// — un-wrapping Unity's physical line folding and decoding escapes — WITHOUT any
+// pretty-printing, so the user's own whitespace (newlines, indentation, condensed
+// nodes) is what they see and edit. AXE-written single-line scalars decode
+// exactly; Unity-folded scalars are un-wrapped to clean indentation.
+function decodeEmbeddedXml(rawYaml) {
+  const scalar = findYamlXmlScalar(rawYaml);
+  if (!scalar) return null;
+  return unescapeYamlDoubleQuoted(unfoldYamlFlowScalar(scalar.raw));
+}
+
+// Escape inner XML for embedding in a YAML double-quoted scalar as a SINGLE line
+// (every newline becomes \n — no physical line folding, so the user's whitespace
+// is preserved exactly with no condensing). Order matters: backslash first.
+function escapeXmlForYamlScalar(xml) {
+  return xml
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+// Re-encode edited inner XML back into a YAML island file's `xml:` scalar,
+// preserving the rest of the file byte-for-byte. Returns the new file text, or
+// null if the `xml:` field can't be located (caller must NOT write then).
+function reencodeEmbeddedXml(rawYaml, innerXml) {
+  const scalar = findYamlXmlScalar(rawYaml);
+  if (!scalar) return null;
+  return rawYaml.slice(0, scalar.start) + escapeXmlForYamlScalar(innerXml) + rawYaml.slice(scalar.end);
+}
+
 function discoverDataFolders() {
   // If no data root is resolved yet (e.g. config missing on first run or the
   // saved folder is unreachable), return an empty structure so the renderer
   // can still boot and present the "choose folder" UI via the status bar.
   if (!DATA_ROOT || !currentLayout) {
-    return { mode: 'narrow', folders: [], sharedMetadataPath: null, expansions: [], structuralErrors: [] };
+    islandEmbeddedAbsPaths = new Set();
+    islandFolderDirs = [];
+    islandTrackedAbsPaths = new Set();
+    return { mode: 'narrow', folders: [], sharedMetadataPath: null, expansions: [], structuralErrors: [], islands: [] };
   }
 
   // SharedMetaData.metadata is always at the base directory's root.
@@ -1504,6 +1789,24 @@ function discoverDataFolders() {
     });
   }
 
+  // ── Extra data sources ("islands") ──
+  // Self-contained schemas + embedded-XML data files outside Configuration.
+  // Their missing-dir problems ride the normal structuralErrors channel; their
+  // embedded data-file absolute paths are cached so read-file can decode them.
+  const { islands, errors: islandErrors } = discoverExtraDataSources();
+  for (const e of islandErrors) structuralErrors.push(e);
+  islandEmbeddedAbsPaths = new Set();
+  islandFolderDirs = [];
+  islandTrackedAbsPaths = new Set();
+  for (const isl of islands) {
+    if (isl.folderPath) islandFolderDirs.push(isl.folderPath);
+    if (isl.metadataPath) islandTrackedAbsPaths.add(path.resolve(isl.metadataPath));
+    for (const f of isl.files) {
+      islandEmbeddedAbsPaths.add(path.resolve(f.path));
+      islandTrackedAbsPaths.add(path.resolve(f.path));
+    }
+  }
+
   return {
     mode: currentLayout.mode,
     folders,
@@ -1516,13 +1819,25 @@ function discoverDataFolders() {
     mods: modsOut,
     schemaExtensions,
     structuralErrors,
+    islands,
   };
 }
 
 // ─── File Operations (IPC Handlers) ──────────────────────────────────
 
 ipcMain.handle('discover-data', () => {
-  return discoverDataFolders();
+  const result = discoverDataFolders();
+  // Islands live outside the watched layer dirs. Make the watcher cover their
+  // folders (so external/Unity edits to a `.asset` fire a change event), and
+  // seed their mtimes so the focus-recheck has a baseline (no spurious reload
+  // on first focus). Safe to call repeatedly — chokidar de-dupes added paths.
+  try {
+    if (watcher && islandFolderDirs.length) watcher.add(islandFolderDirs);
+  } catch (_) {}
+  for (const abs of islandTrackedAbsPaths) {
+    try { fileMtimes.set(relFwd(abs), fs.statSync(abs).mtimeMs); } catch (_) {}
+  }
+  return result;
 });
 
 ipcMain.handle('read-file', async (_event, filePath) => {
@@ -1532,6 +1847,20 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   const fullPath = path.isAbsolute(filePath)
     ? filePath
     : path.join(DATA_ROOT, filePath);
+
+  // ── Island embedded-XML files (e.g. Unity .asset YAML) ──
+  // Return the DECODED inner XML transparently so the renderer edits/displays it
+  // as ordinary XML. The outer YAML is never rewritten here (no CRLF
+  // canonicalization, no mtime write) — these are view-only this milestone and
+  // the write-back round-trip is a later step.
+  if (islandEmbeddedAbsPaths.has(path.resolve(fullPath))) {
+    const rawYaml = fs.readFileSync(fullPath, 'utf-8');
+    const decoded = decodeEmbeddedXml(rawYaml);
+    // Fall back to the raw file if the `xml:` field can't be located, so the
+    // user at least sees something rather than an error.
+    return (decoded != null ? decoded : rawYaml).replace(/\r\n?|\n/g, '\n');
+  }
+
   const raw = fs.readFileSync(fullPath, 'utf-8');
 
   // Canonicalize line endings on disk to CRLF when a data file has any
@@ -1582,6 +1911,31 @@ ipcMain.handle('write-file', async (_event, filePath, content) => {
   const fullPath = path.isAbsolute(filePath)
     ? filePath
     : path.join(DATA_ROOT, filePath);
+
+  // ── Island embedded-XML files (e.g. Unity .asset YAML) ──
+  // `content` is the edited DECODED inner XML. Re-encode it into the existing
+  // on-disk YAML's `xml:` scalar, preserving the rest of the file byte-for-byte.
+  // No CRLF canonicalization (we keep the YAML's own line endings) and no
+  // folding (newlines are escaped as \n), so the user's whitespace round-trips
+  // exactly.
+  if (islandEmbeddedAbsPaths.has(path.resolve(fullPath))) {
+    let rawYaml;
+    try { rawYaml = fs.readFileSync(fullPath, 'utf-8'); }
+    catch (e) { throw new Error(`Island file could not be read for write: ${fullPath}`); }
+    const newYaml = reencodeEmbeddedXml(rawYaml, content);
+    if (newYaml == null) {
+      // Don't clobber a file whose xml: field we can't locate.
+      throw new Error(`Could not locate the xml: field to write into: ${fullPath}`);
+    }
+    recentSaves.add(fullPath);
+    lastSaveTime = Date.now();
+    setTimeout(() => recentSaves.delete(fullPath), 3000);
+    fs.writeFileSync(fullPath, newYaml, 'utf-8');
+    const relPathI = relFwd(fullPath);
+    try { fileMtimes.set(relPathI, fs.statSync(fullPath).mtimeMs); } catch (_) {}
+    sourceControl.refreshFile(fullPath);
+    return true;
+  }
 
   // Mark as self-save so watcher and focus-check ignore
   recentSaves.add(fullPath);
@@ -2580,15 +2934,17 @@ function startFileWatcher() {
       return;
     }
 
-    if (!filePath.endsWith('.xml') && !filePath.endsWith('.metadata')) return;
+    // Island files (e.g. Unity .asset) live outside the data root and use
+    // non-.xml extensions, but must still trigger a reload (e.g. when Unity
+    // rewrites the file). Allow them through alongside .xml / .metadata.
+    const isIsland = islandTrackedAbsPaths.has(path.resolve(filePath));
+    if (!isIsland && !filePath.endsWith('.xml') && !filePath.endsWith('.metadata')) return;
 
     const relativePath = relFwd(filePath);
     broadcastToAll('file-changed-on-disk', relativePath);
-    // VCS status may have changed (modified, reverted, etc.). Refresh
-    // regardless of mtime direction — chokidar notifies on any change,
-    // but the svnProvider's own file-state cache keyed on the path is
-    // what drives the pip color.
-    sourceControl.refreshFile(filePath);
+    // VCS status may have changed (modified, reverted, etc.). Islands are in a
+    // separate repo (outside the data root), so skip the source-control refresh.
+    if (!isIsland) sourceControl.refreshFile(filePath);
   });
 
   watcher.on('add', (filePath) => {

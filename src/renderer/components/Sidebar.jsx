@@ -103,6 +103,7 @@ export default function Sidebar({
   sharedMetadataRelPath = 'SharedMetaData.metadata',
   expansions = [],
   mods = [],
+  islands = [],
   modSchemaExtensions = [],
   onRequestCenterActive,
 }) {
@@ -302,6 +303,15 @@ export default function Sidebar({
             Mods
           </div>
         )}
+        {islands.length > 0 && (
+          <div
+            className={`sidebar-tab ${activeTab === 'islands' ? 'active' : ''}`}
+            onClick={() => onTabChange('islands')}
+            title={`${islands.length} island data source${islands.length === 1 ? '' : 's'}`}
+          >
+            Islands
+          </div>
+        )}
       </div>
 
       <div className="sidebar-search">
@@ -406,6 +416,20 @@ export default function Sidebar({
             onCreateFolder={onCreateFolder}
             detachOnDragEnd={detachOnDragEnd}
             modSchemaExtensions={modSchemaExtensions}
+          />
+        )}
+        {activeTab === 'islands' && (
+          <IslandsList
+            islands={islands}
+            onOpenFile={onOpenFile}
+            activeFiles={activeFileSet}
+            modifiedFiles={modifiedFiles}
+            search={lowerSearch}
+            expandedFolders={expandedFolders}
+            onToggleFolder={onToggleFolder}
+            onContextMenu={setContextMenu}
+            onShowInFolder={onShowInFolder}
+            detachOnDragEnd={detachOnDragEnd}
           />
         )}
         </SidebarErrorBoundary>
@@ -1160,6 +1184,89 @@ function ModsList({ mods, folders, onOpenFile, activeFiles, modifiedFiles, searc
           No active mods.
         </div>
       )}
+    </div>
+  );
+}
+
+// Dedicated tab for self-contained "island" data sources (declared in
+// _extraDataSources.txt). Each island lists its standalone schema
+// (_<Name>.metadata, openable like any schema) and its embedded-XML data files
+// (e.g. Unity .asset; opened as decoded XML — VIEW-ONLY this milestone).
+function IslandsList({ islands, onOpenFile, activeFiles, modifiedFiles, search, expandedFolders, onToggleFolder, onContextMenu, onShowInFolder, detachOnDragEnd }) {
+  const strMatch = (s) => !!s && s.toLowerCase().includes(search);
+
+  const fileRow = (relPath, name, type, absPath, indent) => (
+    <div
+      key={relPath}
+      className={`file-tree-file ${activeFiles.has(relPath) ? 'active' : ''}`}
+      data-filepath={relPath}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/arcen-file', relPath);
+        e.dataTransfer.setData('text/arcen-type', type);
+      }}
+      onDragEnd={detachOnDragEnd(relPath, type)}
+      onClick={() => onOpenFile(relPath, type)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onContextMenu({ x: e.clientX, y: e.clientY, items: [
+          { label: 'Open', action: () => onOpenFile(relPath, type) },
+          ...(absPath ? [{ label: 'Show in Explorer', action: () => onShowInFolder(absPath) }] : []),
+        ] });
+      }}
+      style={{ paddingLeft: indent, position: 'relative' }}
+    >
+      <span style={{ flex: 1, fontSize: 12, ...(type === 'schema' ? { fontStyle: 'italic', color: 'var(--text-dim)' } : {}) }}>
+        {type === 'schema' ? `[schema] ${name}` : name}
+      </span>
+      {modifiedFiles.has(relPath) && (
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gutter-changed)' }} />
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ paddingTop: 4 }}>
+      {islands.map((isl) => {
+        const islandKey = `islands:${isl.folderRelPath}`;
+        const islandNameMatches = search && strMatch(isl.name);
+        const files = (isl.files || []).filter((f) => !search || islandNameMatches || strMatch(f.name));
+        const schemaShown = !!isl.metadataRelPath && (!search || islandNameMatches || strMatch(isl.metadataFile));
+        if (search && !islandNameMatches && files.length === 0 && !schemaShown) return null;
+        // Islands are few, so default to EXPANDED; a PRESENT key means collapsed
+        // (local inversion of the usual convention — toggling still just flips
+        // the key's presence).
+        const isExpanded = search ? true : !expandedFolders.has(islandKey);
+        return (
+          <div key={islandKey}>
+            <div
+              className="file-tree-folder-header"
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', cursor: 'pointer', userSelect: 'none' }}
+              onClick={() => onToggleFolder(islandKey)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onContextMenu({ x: e.clientX, y: e.clientY, items: isl.metadataPath
+                  ? [{ label: 'Show in Explorer', action: () => onShowInFolder(isl.metadataPath) }]
+                  : [] });
+              }}
+            >
+              <span style={{ fontSize: 10, width: 12 }}>{isExpanded ? '▼' : '▶'}</span>
+              <span style={{ flex: 1, fontWeight: 600, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {isl.name}
+                {isl.embedExtension && (
+                  <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>{` .${isl.embedExtension}`}</span>
+                )}
+              </span>
+            </div>
+            {isExpanded && (
+              <>
+                {schemaShown && fileRow(isl.metadataRelPath, isl.metadataFile, 'schema', isl.metadataPath, 30)}
+                {files.map((f) => fileRow(f.relativePath, f.name, 'xml', f.path, 30))}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

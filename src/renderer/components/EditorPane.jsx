@@ -19,7 +19,7 @@ import { createSearchScrollMarkers } from '../editor/searchScrollMarkers';
 import { createArcenHighlighter, createSchemaDecorations, createMetadataDecorations } from '../editor/highlighting';
 import ReferencePanel from './ReferencePanel';
 import LocalSearchHistory from './LocalSearchHistory';
-import { tokenize, buildAttrMap } from '../editor/xmlTokenizer';
+import { tokenize, buildAttrMap, buildLocalKeyIndex, localKeyValuesInScope } from '../editor/xmlTokenizer';
 import { naturalCompare } from '../editor/naturalSort';
 import { createArcenKeymap, createArcenInputHandlers } from '../editor/keybindings';
 import { createArcenAutocomplete } from '../editor/autocomplete';
@@ -584,6 +584,18 @@ export default function EditorPane({
               setDropdown({
                 view, attr: { vs: valuePos, ve: valuePos, v: '', src: null },
                 options: def.options.slice(), x: coords.left, y: coords.bottom,
+              });
+            }
+          } else if (def.type === 'local-dropdown' && def.local_source) {
+            // local-dropdown completed — open the picker with the record-scoped
+            // local keys of the named sub_node type at this position.
+            const idx = buildLocalKeyIndex(tokenize(view.state.doc.toString()), getSchema());
+            const options = localKeyValuesInScope(idx, valuePos, def.local_source);
+            const coords = view.coordsAtPos(valuePos);
+            if (coords && options.length) {
+              setDropdown({
+                view, attr: { vs: valuePos, ve: valuePos, v: '', src: null },
+                options, x: coords.left, y: coords.bottom,
               });
             }
           }

@@ -16,7 +16,7 @@
  * deprecated by the engine and stripped from the metadata files.
  */
 
-import { tokenize, buildAttrMap } from './xmlTokenizer';
+import { tokenize, buildAttrMap, buildLocalKeyIndex, localKeyValuesInScope } from './xmlTokenizer';
 import { buildMergedSchema, composeSchemaForFileLayer } from './schemaParser';
 import { resolveSwapChain, allowedTargetLayers } from './fkIndex';
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from './spellcheck';
@@ -214,6 +214,16 @@ export function structuralErrorsToEntries(structuralErrors) {
         kind: 'orphan-folder',
         folderPath: se.folderPath,
       });
+    } else if (se.kind === 'extra-source-missing') {
+      // A directory listed in _extraDataSources.txt doesn't exist under the
+      // data root. The editor ignores it gracefully; this just tells the user.
+      out.push({
+        severity: 'warning',
+        file: se.dir,
+        line: 1,
+        message: `Extra data source folder "${se.dir}" (listed in _extraDataSources.txt) was not found under the data root — its contents can't be loaded. Check the path or remove the line.`,
+        kind: 'extra-source-missing',
+      });
     } else if (se.kind === 'metadata-in-expansion') {
       // Legacy — DLCs are now allowed to host schemas, so this kind is no
       // longer emitted by the current discover pass.
@@ -343,6 +353,9 @@ export function validateXMLFile(content, relativePath, mergedSchema, fkIndex, lo
   const lines = content.split('\n');
   const tokens = tokenize(content);
   const attrMap = buildAttrMap(tokens, mergedSchema);
+  // Record-scoped local keys (self-FK). Empty/inert unless the schema declares
+  // `local_key` attributes (normal data tables don't).
+  const localKeyIndex = buildLocalKeyIndex(tokens, mergedSchema);
 
   // Build line lookup: position → line number
   function lineAt(pos) {
@@ -705,6 +718,27 @@ export function validateXMLFile(content, relativePath, mergedSchema, fkIndex, lo
           let msg = `Invalid lang-string reference: "${attr.v}" not found in Language table`;
           if (swapValid) msg += `. LookupSwaps indicates you might mean: ${swapped}?`;
           errors.push({ severity: 'error', file: relativePath, line, message: msg });
+        }
+      }
+    }
+
+    // Check 15: local references (self-FK). A `local-dropdown` / `local-list`
+    // value must be a `local_key` defined by a `local_source`-typed sub_node
+    // within the SAME record (e.g. a transition's `to` must name a <state> id in
+    // the same <motion_set>). Blank is allowed (e.g. initial_state="" = first).
+    if ((attr.tp === 'local-dropdown' || attr.tp === 'local-list') && attr.d?.local_source && attr.v) {
+      const srcType = attr.d.local_source;
+      const valid = new Set(localKeyValuesInScope(localKeyIndex, attr.ns2, srcType));
+      const vals = attr.tp === 'local-list'
+        ? attr.v.split(',').map((s) => s.trim()).filter(Boolean)
+        : [attr.v];
+      for (const val of vals) {
+        if (!val || val === 'None') continue;
+        if (!valid.has(val)) {
+          errors.push({
+            severity: 'error', file: relativePath, line,
+            message: `Invalid local reference: "${val}" is not a <${srcType}> id defined in this <${mergedSchema.nodeName}>`,
+          });
         }
       }
     }

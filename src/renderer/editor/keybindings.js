@@ -9,7 +9,7 @@
 
 import { EditorView } from '@codemirror/view';
 import { selectLine } from '@codemirror/commands';
-import { isInQuotes } from './xmlTokenizer';
+import { isInQuotes, tokenize } from './xmlTokenizer';
 
 function arcenInputHandler() {
   return EditorView.inputHandler.of((view, from, to, text) => {
@@ -276,6 +276,75 @@ function toSeparateWordsHandler(view) {
   return true;
 }
 
+// Condense nodes in `text` by dropping whitespace-only text BETWEEN tags.
+// Attribute spacing inside a tag and any non-whitespace text content are kept
+// verbatim. Two modes:
+//   joinSiblings=false (Ctrl+Shift+1): one line PER outer node — drop inter-tag
+//     whitespace inside each node (depth >= 1), keep the depth-0 spacing (each
+//     node's own indentation + a single newline between nodes, blank lines
+//     collapsed).
+//   joinSiblings=true (Ctrl+Shift+2): everything onto ONE line — drop ALL
+//     inter-tag whitespace, keeping only the leading indentation before the
+//     first node.
+function condenseSelectedNodes(text, joinSiblings) {
+  const tokens = tokenize(text);
+  let out = '';
+  let depth = 0;          // nesting depth relative to the selection
+  let inTag = false;      // between `<`/`</` and the closing `>`/`/>`
+  let curTagIsClose = false;
+  let seenTag = false;    // have we emitted the first tag yet?
+  for (const tk of tokens) {
+    if (tk.c === 'br' && tk.s === '<') { inTag = true; curTagIsClose = false; seenTag = true; out += tk.s; continue; }
+    if (tk.c === 'br' && tk.s === '</') { inTag = true; curTagIsClose = true; seenTag = true; out += tk.s; continue; }
+    if (tk.c === 'br' && tk.s === '>') {
+      inTag = false; out += tk.s;
+      if (curTagIsClose) depth = Math.max(0, depth - 1); else depth++;
+      continue;
+    }
+    if (tk.c === 'br' && tk.s === '/>') { inTag = false; out += tk.s; continue; }
+    // Whitespace-only text node between tags.
+    if (tk.c === 't' && !inTag && /^\s*$/.test(tk.s)) {
+      if (!seenTag) { out += tk.s; continue; }   // leading indentation — always keep
+      if (depth >= 1) continue;                  // inside a node — always drop
+      // Depth 0 (between/after outer nodes):
+      if (joinSiblings) continue;                // Ctrl+Shift+2 — siblings on one line
+      // Ctrl+Shift+1 — keep, collapsing blank lines to one newline + indent.
+      out += tk.s.includes('\n') ? '\n' + tk.s.slice(tk.s.lastIndexOf('\n') + 1) : tk.s;
+      continue;
+    }
+    out += tk.s;
+  }
+  return out;
+}
+
+// Apply a condense over the whole-line range covering the selection (so each
+// node's leading indentation is included).
+function runCondense(view, joinSiblings) {
+  const sel = view.state.selection.main;
+  if (sel.empty) return false;
+  const fromLine = view.state.doc.lineAt(sel.from);
+  let endLine = view.state.doc.lineAt(sel.to);
+  if (sel.to === endLine.from && endLine.number > fromLine.number) {
+    endLine = view.state.doc.line(endLine.number - 1);
+  }
+  const from = fromLine.from;
+  const to = endLine.to;
+  const text = view.state.sliceDoc(from, to);
+  const condensed = condenseSelectedNodes(text, joinSiblings);
+  if (condensed !== text) {
+    view.dispatch({
+      changes: { from, to, insert: condensed },
+      selection: { anchor: from, head: from + condensed.length },
+    });
+  }
+  return true;
+}
+
+// Ctrl+Shift+1 — one line per outer node, outer indentation preserved.
+function condenseNodesHandler(view) { return runCondense(view, false); }
+// Ctrl+Shift+2 — condense the selected siblings onto a single line.
+function condenseSiblingsHandler(view) { return runCondense(view, true); }
+
 export function createArcenKeymap() {
   return [
     { key: 'Enter', run: enterHandler },
@@ -288,6 +357,8 @@ export function createArcenKeymap() {
     { key: 'Mod-l', run: selectLine, preventDefault: true },
     { key: 'Mod-Shift-r', run: toUpperSnakeCaseHandler, preventDefault: true },
     { key: 'Mod-Shift-e', run: toSeparateWordsHandler, preventDefault: true },
+    { key: 'Ctrl-Shift-1', run: condenseNodesHandler, preventDefault: true },
+    { key: 'Ctrl-Shift-2', run: condenseSiblingsHandler, preventDefault: true },
   ];
 }
 

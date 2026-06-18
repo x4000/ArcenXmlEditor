@@ -178,17 +178,24 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
     layerByRelPath, modSchemaExtensions, schemas,
     getContent, setContent, openFile, scrollTo,
     scheduleScroll = (fn) => setTimeout(fn, 100),
+    island = null,
   } = ctx;
 
   if (!activeRelPath) return;
-  const folderName = folderNameOf(activeRelPath);
-  const folder = folders.find((f) => f.name === folderName);
-  if (!folder) return;
-  const schemaNodeName = schemas?.[folderName]?.nodeName;
-  const sharedRel = sharedMetadataRelPath;
-  const activeLayer = layerByRelPath?.get(activeRelPath)?.layer;
 
-  // Mod-extension lookup for this file's mod (if applicable).
+  // Island data file: its schema is the island's own standalone `_<Name>.metadata`
+  // — no folder lookup, no SharedMetaData, no mod extensions. Synthesize a
+  // folder-like shape so the search/insert logic below works unchanged.
+  const folderName = island ? island.name : folderNameOf(activeRelPath);
+  const folder = island
+    ? { name: island.name, metadataRelPath: island.metadataRelPath, metadataPath: island.metadataPath }
+    : folders.find((f) => f.name === folderName);
+  if (!folder) return;
+  const schemaNodeName = island ? island.nodeName : schemas?.[folderName]?.nodeName;
+  const sharedRel = island ? null : sharedMetadataRelPath;
+  const activeLayer = island ? null : layerByRelPath?.get(activeRelPath)?.layer;
+
+  // Mod-extension lookup for this file's mod (if applicable; never for islands).
   let extRecord = null;
   if (activeLayer && activeLayer.startsWith('mod_')) {
     extRecord = (modSchemaExtensions || []).find(
@@ -265,8 +272,7 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
     }
 
     const comment = `\t<!--FIELD_NEEDED: ${attrName}-->\n`;
-    const schema = schemas[folderName];
-    const nodeName = schema?.nodeName;
+    const nodeName = schemaNodeName;
     const isSubNode = parentTag && parentTag !== nodeName && parentTag !== 'root';
 
     let insertPos;

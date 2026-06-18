@@ -11,7 +11,7 @@
  */
 
 import { EditorView } from '@codemirror/view';
-import { tokenize, buildAttrMap } from './xmlTokenizer';
+import { tokenize, buildAttrMap, buildLocalKeyIndex, localKeyValuesInScope, findLocalKeyDefPos } from './xmlTokenizer';
 import { naturalCompare } from './naturalSort';
 import { getFKOptionsForLayer, getFKSubOptionsForLayer } from './fkIndex';
 
@@ -106,6 +106,41 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
             event.preventDefault();
             callbacks.navigateToFK('0_Language', attr.v);
             return true;
+          }
+
+          // Ctrl+click local reference → jump to its definition in THIS file
+          // (same record). No callback needed — the target is in the open doc.
+          if ((event.ctrlKey || event.metaKey) && event.detail === 1 && attr.tp === 'local-dropdown' && attr.d?.local_source && attr.v) {
+            event.preventDefault();
+            const idx = buildLocalKeyIndex(tokens, schema);
+            const defPos = findLocalKeyDefPos(idx, attr.ns2, attr.d.local_source, attr.v);
+            if (defPos != null) {
+              view.dispatch({
+                selection: { anchor: defPos },
+                effects: EditorView.scrollIntoView(defPos, { y: 'center' }),
+              });
+              view.focus();
+            }
+            return true;
+          }
+
+          // Local-key dropdown — pick from the record-scoped ids (delayed to
+          // allow double-click word selection, mirroring the FK dropdown).
+          if (attr.tp === 'local-dropdown' && attr.d?.local_source && callbacks.openDropdown) {
+            if (event.detail >= 2) return false;
+            if (fkClickTimer) clearTimeout(fkClickTimer);
+            const cx = event.clientX, cy = event.clientY;
+            const attrCopy = { ...attr };
+            const srcType = attr.d.local_source;
+            fkClickTimer = setTimeout(() => {
+              fkClickTimer = null;
+              const sel = view.state.selection.main;
+              if (sel.from !== sel.to) return;
+              const idx = buildLocalKeyIndex(tokenize(view.state.doc.toString()), schema);
+              const options = localKeyValuesInScope(idx, attrCopy.ns2, srcType).sort(naturalCompare);
+              callbacks.openDropdown(view, attrCopy, options, cx, cy);
+            }, 250);
+            return false;
           }
 
           // FK dropdown — delayed to allow double-click word selection
@@ -292,6 +327,19 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
         const doc = view.state.doc.toString();
         const tokens = tokenize(doc);
         const attrMap = buildAttrMap(tokens, schema);
+
+        // Tag-name hover → sub_node tooltip (the node analogue of an attribute
+        // tooltip). Matches the hovered tag against the schema's sub_nodes.
+        for (const tk of tokens) {
+          if (tk.c === 'tg' && pos >= tk.p && pos < tk.p + tk.s.length) {
+            const sn = (schema.subNodes || []).find((s) => s.id === tk.s);
+            if (sn && sn.tooltip && callbacks.showTooltip) {
+              callbacks.showTooltip(sn.tooltip, cx, cy);
+              return;
+            }
+            break; // hovering a tag name, but no tooltip for it — stop scanning
+          }
+        }
 
         for (const attr of attrMap) {
           if (pos >= attr.ns2 && pos < attr.ne && attr.d) {

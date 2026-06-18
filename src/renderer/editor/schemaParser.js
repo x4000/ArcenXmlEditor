@@ -88,6 +88,9 @@ export function parseMetadata(xmlContent, folderName) {
   for (const snEl of root.querySelectorAll('sub_node')) {
     const subNode = {
       id: snEl.getAttribute('id') || '',
+      // Optional human description shown on hover over the node's tag name in
+      // the editor (the sub-node analogue of an attribute's tooltip).
+      tooltip: snEl.getAttribute('tooltip') || undefined,
       attributes: [],
     };
     for (const el of snEl.querySelectorAll(':scope > attribute')) {
@@ -140,6 +143,10 @@ function parseAttributeElement(el) {
   //   minlength, maxlength, min, max, is_required, content_width_px.
   const optionals = [
     'default', 'node_source', 'node_sub_source', 'node_extra_allowed',
+    // local_source: for `local-dropdown` / `local-list` types — names the
+    // sub_node type whose `local_key` values are the valid (record-scoped)
+    // targets. The self-FK analogue of node_source. See buildLocalKeyIndex.
+    'local_source',
     'tooltip', 'description',
     'is_localized',
     // ID-like flags — spellcheck and other string-handling logic should treat these
@@ -276,7 +283,7 @@ export function composeSchemaWithExtensions(merged, extensions) {
     for (const sn of (ext.subNodes || [])) {
       const existingIdx = sn.id != null ? subNodeIndexById.get(sn.id) : undefined;
       if (existingIdx == null) {
-        subNodes.push({ id: sn.id || '', attributes: [...(sn.attributes || [])] });
+        subNodes.push({ id: sn.id || '', tooltip: sn.tooltip, attributes: [...(sn.attributes || [])] });
         subNodeIndexById.set(sn.id, subNodes.length - 1);
       } else {
         const target = subNodes[existingIdx];

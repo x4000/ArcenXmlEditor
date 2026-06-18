@@ -46,12 +46,14 @@ const SEMANTIC_COLORS = {
     number: '#098658', dimmed: '#c0c0c0',
     headerAttrName: '#ff2dcb', headerAttrValue: '#b749fe',
     subNodeTag: '#923aff', stringDropdown: '#b8860b',
+    localRef: '#0a7d6b',
   },
   dark: {
     fkDropdown: '#4dd0e1', fkList: '#c586c0', bool: '#569cd6',
     number: '#b5cea8', dimmed: '#555555',
     headerAttrName: '#ff5c8a', headerAttrValue: '#f0b0ff',
     subNodeTag: '#b57cff', stringDropdown: '#d7ba7d',
+    localRef: '#56c8b0',
   },
 };
 
@@ -238,6 +240,13 @@ export function createSchemaDecorations(getSchema, theme) {
               break;
             case 'node-list':
               valueColor = colors.fkList;
+              break;
+            case 'local-dropdown':
+            case 'local-list':
+              // Record-scoped self-FK — clickable like an FK dropdown (dotted
+              // underline), distinct color so it reads as a local link.
+              valueColor = colors.localRef;
+              underline = true;
               break;
             case 'int-textbox':
             case 'float-textbox':

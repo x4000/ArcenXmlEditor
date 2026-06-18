@@ -124,6 +124,17 @@ export default function App() {
   const expansionDirNameToLayer = layerMaps.expansionDirNameToLayer;
   const [sharedSchema, setSharedSchema] = useState(null);
   const [schemas, setSchemas] = useState({});
+  // "Island" data sources (self-contained schemas + embedded-XML .asset files
+  // outside Configuration; see discoverExtraDataSources in main.js). `islands`
+  // drives the dedicated sidebar tab. `islandSchemaByRelPath` maps each island
+  // data file's relPath → its STANDALONE parsed schema (no SharedMetaData
+  // merge, no FK index) — fed straight to the editor. `islandRelPathsRef`
+  // mirrors the keys as a Set for stale-closure-free "is this view-only?"
+  // checks in saveFile and the bulk-replace guards.
+  const [islands, setIslands] = useState([]);
+  const [islandSchemaByRelPath, setIslandSchemaByRelPath] = useState(() => new Map());
+  const islandRelPathsRef = useRef(new Set());        // data files only → view-only guard
+  const islandAllRelPathsRef = useRef(new Set());     // data files + each island's metadata → sidebar-tab stickiness
   // Mod schema extensions, parsed and indexed by (modLayer, folderName).
   // An extension contributes additional attributes / sub_nodes that apply
   // when validating files in that mod (and any mod that requires it). See
@@ -285,6 +296,15 @@ export default function App() {
   folderNameByRelPathRef.current = folderNameByRelPath;
   const layerByRelPathRef = useRef(layerByRelPath);
   layerByRelPathRef.current = layerByRelPath;
+  // Which sidebar tab "owns" a given file's relPath — so every reveal/center
+  // action routes to the right tab. Island data/schema files live in the Extra
+  // tab, mod files in MODS, everything else in the Explorer. Reads refs so it's
+  // safe to call from once-registered IPC handlers and context-menu closures.
+  function sidebarTabForPath(relPath) {
+    if (islandAllRelPathsRef.current.has(relPath)) return 'islands';
+    if (/^mod_/.test(layerByRelPathRef.current.get(relPath)?.layer || '')) return 'mods';
+    return 'files';
+  }
   // Current tabs, read by once-registered IPC handlers (onFocusTab) without
   // re-subscribing on every tabs change.
   const tabsRef = useRef(tabs);
@@ -337,6 +357,37 @@ export default function App() {
     return extensionsMap;
   }, []);
 
+  // Parse each island's standalone schema and index it by its data files'
+  // relPaths. Islands are self-contained: their `_<Name>.metadata` IS the whole
+  // schema (parseMetadata output is already merged-shape), with no SharedMetaData
+  // merge and no FK index. Also seeds islandRelPathsRef (the view-only set).
+  const loadIslands = useCallback(async (islandsData) => {
+    const list = islandsData || [];
+    setIslands(list);
+    const map = new Map();
+    const relSet = new Set();
+    const allSet = new Set();
+    for (const isl of list) {
+      let parsed = null;
+      try {
+        const txt = await window.arcenApi.readFile(isl.metadataRelPath);
+        parsed = parseMetadata(txt, isl.name);
+      } catch (e) {
+        console.warn('[islands] Could not read island metadata:', isl.metadataRelPath, e);
+      }
+      if (isl.metadataRelPath) allSet.add(isl.metadataRelPath);
+      for (const f of (isl.files || [])) {
+        relSet.add(f.relativePath);
+        allSet.add(f.relativePath);
+        if (parsed) map.set(f.relativePath, parsed);
+      }
+    }
+    islandRelPathsRef.current = relSet;
+    islandAllRelPathsRef.current = allSet;
+    setIslandSchemaByRelPath(map);
+    return map;
+  }, []);
+
   // Apply a discoverData() response to both folders state and the layout
   // metadata (mode, expansions, structural errors). Used everywhere we
   // re-discover after a filesystem change. Async because we also reload
@@ -354,7 +405,8 @@ export default function App() {
     });
     setModSchemaExtensionsList(data.schemaExtensions || []);
     await loadExtensionsAndIndex(data.schemaExtensions);
-  }, [loadExtensionsAndIndex]);
+    await loadIslands(data.islands);
+  }, [loadExtensionsAndIndex, loadIslands]);
 
   // ── Startup: discover, parse schemas, load files, build index, validate ──
   useEffect(() => {
@@ -404,6 +456,12 @@ export default function App() {
       // extension paths and skip the per-folder-overwrite branch.
       setModSchemaExtensionsList(data.schemaExtensions || []);
       const extensionsMap = await loadExtensionsAndIndex(data.schemaExtensions);
+
+      // Parse island standalone schemas (self-contained sources outside
+      // Configuration). Deliberately NOT added to the bulk load below, so they
+      // stay out of allFileContentsRef / the FK index / the validation worker —
+      // their content enters memory only when opened.
+      await loadIslands(data.islands);
 
       // Load ALL XML file contents for FK index + validation
       const bulk = {};
@@ -514,7 +572,11 @@ export default function App() {
             const prevCore = [];
             const prevKept = [];
             for (const e of prev) {
-              if (e.message.startsWith('Spelling:') || e.message.startsWith('Grammar (')) {
+              // Island-file errors are produced by the live island-validation
+              // effect (the worker never sees island files), so preserve them
+              // here exactly like Spelling/Grammar — otherwise each core tick
+              // would wipe them.
+              if (e.message.startsWith('Spelling:') || e.message.startsWith('Grammar (') || islandRelPathsRef.current.has(e.file)) {
                 prevKept.push(e);
               } else {
                 prevCore.push(e);
@@ -664,7 +726,16 @@ export default function App() {
           const relPath = typeof rawPath === 'string' ? rawPath.replace(/\\/g, '/') : rawPath;
           if (seen.has(relPath)) continue;
           seen.add(relPath);
-          const content = bulk[relPath];
+          let content = bulk[relPath];
+          if (content === undefined) {
+            // Not in the bulk load — e.g. an island .asset (or island metadata),
+            // which are loaded lazily, not bulk-loaded. Read it on demand so the
+            // tab (and the last-active selection) is restored. Skip if gone.
+            try {
+              content = await window.arcenApi.readFile(relPath);
+              allFileContentsRef.current[relPath] = content;
+            } catch (_) { content = undefined; }
+          }
           if (content !== undefined) {
             restoredTabs.push({
               relativePath: relPath,
@@ -718,10 +789,12 @@ export default function App() {
     // the Explorer) bounces off the MODS tab back to Files. Favorites is left
     // alone.
     if (tab) {
-      const isMod = /^mod_/.test(layerByRelPathRef.current.get(tab.relativePath)?.layer || '');
-      if (isMod) {
-        if (sidebarTab !== 'mods') setSidebarTab('mods');
-      } else if (sidebarTab === 'mods') {
+      const want = sidebarTabForPath(tab.relativePath);
+      // Island/mod files pull the sidebar to their own tab; everything else
+      // bounces off mods/islands back to the Explorer. Favorites is left alone.
+      if (want !== 'files') {
+        if (sidebarTab !== want) setSidebarTab(want);
+      } else if (sidebarTab === 'mods' || sidebarTab === 'islands') {
         setSidebarTab('files');
       }
       // Feed the cross-window "center on active" target.
@@ -816,8 +889,7 @@ export default function App() {
       // expand its folder and scroll to it. opts.highlight (set by a detached
       // window's deliberate "Center sidebar on this") flashes the row; the
       // passive sync on detached tab-switch / editor click leaves it off.
-      const isMod = /^mod_/.test(layerByRelPathRef.current.get(relativePath)?.layer || '');
-      setSidebarTab(isMod ? 'mods' : 'files');
+      setSidebarTab(sidebarTabForPath(relativePath));
       setScrollSidebarTo(opts?.highlight ? relativePath : { path: relativePath, highlight: false });
       const folderName = folderNameOf(relativePath);
       setExpandedFolders(prev => new Set(prev).add(folderName));
@@ -874,6 +946,10 @@ export default function App() {
     // refs, etc. Returns content unchanged when the file has no spellcheckable
     // ranges (no schema, or nothing to fix), so untargeted files are left alone.
     const replaceSpellingInFile = (file, content, oldText, newText) => {
+      // Never rewrite an island embedded-XML file (view-only; writing decoded
+      // XML would clobber the YAML). Belt-and-suspenders: islands also have no
+      // resolvable schema here, so they'd produce no ranges anyway.
+      if (islandRelPathsRef.current.has(file)) return content;
       const isMetadata = file.toLowerCase().endsWith('.metadata');
       let mergedSchema = null;
       if (!isMetadata) {
@@ -1521,9 +1597,12 @@ export default function App() {
     // else — xml and non-mod schema, which now comingle in the Explorer —
     // bounces off MODS back to Files. Favorites is left alone.
     const opensInMod = /^mod_/.test(layerByRelPathRef.current.get(normPath)?.layer || '');
-    if (opensInMod) {
+    const opensInIsland = islandAllRelPathsRef.current.has(normPath);
+    if (opensInIsland) {
+      if (sidebarTab !== 'islands') setSidebarTab('islands');
+    } else if (opensInMod) {
       if (sidebarTab !== 'mods') setSidebarTab('mods');
-    } else if (sidebarTab === 'mods') {
+    } else if (sidebarTab === 'mods' || sidebarTab === 'islands') {
       setSidebarTab('files');
     }
 
@@ -1588,6 +1667,26 @@ export default function App() {
 
   // ── Save file + re-validate + update FK index ──
   const saveFile = useCallback(async (relativePath) => {
+    // Island embedded-XML files: the editor holds the decoded inner XML; the
+    // main process re-encodes it back into the YAML's `xml:` field, preserving
+    // the rest of the file (and the user's whitespace) exactly. Skip the normal
+    // FK-index / worker-validation path — islands aren't in `folders`; the live
+    // island-validation effect covers them.
+    if (islandRelPathsRef.current.has(relativePath)) {
+      const islandContent = fileContents[relativePath];
+      if (islandContent === undefined) return;
+      try {
+        await window.arcenApi.writeFile(relativePath, islandContent);
+      } catch (e) {
+        alert(`Could not save ${relativePath}: ${e?.message || e}`);
+        return;
+      }
+      allFileContentsRef.current[relativePath] = islandContent;
+      setSavedContents((prev) => ({ ...prev, [relativePath]: islandContent }));
+      recentSavesRef.current.add(relativePath);
+      setTimeout(() => recentSavesRef.current.delete(relativePath), 5000);
+      return;
+    }
     const content = fileContents[relativePath];
     if (content === undefined) return;
     await window.arcenApi.writeFile(relativePath, content);
@@ -2856,6 +2955,39 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [fileContents, activeTabIndex, tabs, schemas, sharedSchema]);
 
+  // ── Live validation for the active ISLAND file ──
+  // Islands aren't in `folders`, so the validation worker never sees them.
+  // Validate the active island file here against its STANDALONE schema with an
+  // EMPTY fkIndex — i.e. only its own custom validator logic (malformed XML,
+  // unknown attrs, wrong-name sub-nodes, type mismatches, dropdown options, and
+  // record/structurally-scoped local references). No FK / shared / cross-layer.
+  // Runs on open and (debounced) on every edit, so it's live even though island
+  // files are view-only. worker.onmessage preserves these across core ticks.
+  useEffect(() => {
+    const activeFile = tabs[activeTabIndex]?.relativePath;
+    if (!activeFile) return;
+    const schema = islandSchemaByRelPath.get(activeFile);
+    if (!schema) return; // not an island file
+    const content = fileContents[activeFile];
+    if (content === undefined) return;
+    const timer = setTimeout(() => {
+      let errs = [];
+      try {
+        errs = validateXMLFile(content, activeFile, schema, {}, lookupSwapsRef.current, { layer: 'base', folderName: '' });
+      } catch (_) { /* non-fatal */ }
+      setValidationErrors((prev) => {
+        const sig = (arr) => arr.map((e) => e.line + '|' + e.severity + '|' + e.message).sort().join('\n');
+        const minePrev = prev.filter((e) => e.file === activeFile && !e.message.startsWith('Spelling:'));
+        if (sig(minePrev) === sig(errs)) return prev;
+        const other = prev.filter((e) => !(e.file === activeFile && !e.message.startsWith('Spelling:')));
+        const combined = [...other, ...errs];
+        window.arcenApi.sendValidationResults(combined);
+        return combined;
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [fileContents, activeTabIndex, tabs, islandSchemaByRelPath]);
+
   // ── Periodic background revalidation (every 30s after any save) ──
   const lastValidationTime = useRef(Date.now());
   const saveCountSinceValidation = useRef(0);
@@ -2938,11 +3070,9 @@ export default function App() {
       }
     }
     items.push({ label: 'Center sidebar on this', action: () => {
-      // Mod files live in MODS; xml + non-mod schema comingle in the Explorer.
-      const isMod = /^mod_/.test(layerByRelPath.get(tab.relativePath)?.layer || '');
-      setSidebarTab(isMod ? 'mods' : 'files');
-      const folderName = folderNameOf(tab.relativePath);
-      setExpandedFolders((prev) => new Set(prev).add(folderName));
+      const want = sidebarTabForPath(tab.relativePath);
+      setSidebarTab(want);
+      if (want === 'files') setExpandedFolders((prev) => new Set(prev).add(folderNameOf(tab.relativePath)));
       setScrollSidebarTo(tab.relativePath);
     }});
     items.push({ label: 'Open in Explorer', action: () => {
@@ -3048,6 +3178,11 @@ export default function App() {
   // its own merged schema in that case.
   const composedSchemaForActive = useMemo(() => {
     if (!activeTab || activeTab.type === 'schema') return null;
+    // Island data file: its standalone schema IS the merged schema — no
+    // SharedMetaData merge, no layer composition. Checked first so islands
+    // render even when sharedSchema is absent (they don't use it).
+    const islandSchema = islandSchemaByRelPath.get(activeTab.relativePath);
+    if (islandSchema) return islandSchema;
     if (!sharedSchema || !activeSchema) return null;
     const merged = buildMergedSchema(sharedSchema, activeSchema);
     if (!merged) return null;
@@ -3056,7 +3191,7 @@ export default function App() {
     return composeSchemaForFileLayer(
       merged, schemaExtensions, layerMaps.modExtrasByLayer, layer, folderName
     );
-  }, [activeTab, activeSchema, sharedSchema, schemaExtensions, layerMaps, layerByRelPath]);
+  }, [activeTab, activeSchema, sharedSchema, schemaExtensions, layerMaps, layerByRelPath, islandSchemaByRelPath]);
 
   // ── Ctrl+click attribute name → navigate to metadata file ──
   //
@@ -3081,8 +3216,13 @@ export default function App() {
   // base. Otherwise the folder's primary schema.
   const handleNavigateToMetadata = useCallback((attrName, parentTag) => {
     if (!activeTab) return;
+    // Island data file → jump into its standalone _<Name>.metadata.
+    const island = islands.find((isl) =>
+      (isl.files || []).some((f) => f.relativePath === activeTab.relativePath)
+    ) || null;
     navigateToMetadataDef(attrName, parentTag, {
       activeRelPath: activeTab.relativePath,
+      island,
       folderNameOf,
       folders,
       sharedMetadataRelPath: dataLayout.sharedMetadataRelPath,
@@ -3098,7 +3238,7 @@ export default function App() {
       scrollTo: ({ file, line, highlight }) =>
         setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-  }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList, schemas, dataLayout.sharedMetadataRelPath]);
+  }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList, schemas, dataLayout.sharedMetadataRelPath, islands]);
 
   // ── Ctrl+click an unknown sub-node tag → declare it in the schema ──
   //
@@ -3255,15 +3395,16 @@ export default function App() {
           try { target = await window.arcenApi.getCenterTarget?.(); } catch (_) {}
           if (!target) target = activeTab?.relativePath || null;
           if (!target) return;
-          const isMod = isModTab(target);
-          setSidebarTab(isMod ? 'mods' : 'files');
-          if (!isMod) setExpandedFolders((prev) => new Set(prev).add(folderNameOf(target)));
+          const want = sidebarTabForPath(target);
+          setSidebarTab(want);
+          if (want === 'files') setExpandedFolders((prev) => new Set(prev).add(folderNameOf(target)));
           setScrollSidebarTo(target);
         }}
         onShowInFolder={(filePath) => window.arcenApi.showInFolder(filePath)}
         sharedMetadataRelPath={dataLayout.sharedMetadataRelPath}
         expansions={dataLayout.expansions}
         mods={dataLayout.mods || []}
+        islands={islands}
         modSchemaExtensions={modSchemaExtensionsList}
         onRenameFile={async (oldPath, newPath) => {
           try {
@@ -3388,11 +3529,10 @@ export default function App() {
               // menu → "Show changes since save".
               const tab = tabs[realIdx];
               if (tab) {
-                // Mod files live in MODS; xml + non-mod schema comingle in the
-                // Explorer, where the schema sits inside its folder.
-                const isMod = /^mod_/.test(layerByRelPath.get(tab.relativePath)?.layer || '');
-                setSidebarTab(isMod ? 'mods' : 'files');
-                if (!isMod) {
+                // Route to the tab that owns this file (Extra / MODS / Explorer).
+                const want = sidebarTabForPath(tab.relativePath);
+                setSidebarTab(want);
+                if (want === 'files') {
                   setExpandedFolders((prev) => new Set(prev).add(folderNameOf(tab.relativePath)));
                 }
                 setScrollSidebarTo(tab.relativePath);
@@ -3478,9 +3618,9 @@ export default function App() {
                 // Left-click in the editor focuses the sidebar on this file,
                 // like clicking its tab header — but without the 3s flash,
                 // since clicks are frequent.
-                const isMod = isModTab(rp);
-                setSidebarTab(isMod ? 'mods' : 'files');
-                if (!isMod) setExpandedFolders((prev) => new Set(prev).add(folderNameOf(rp)));
+                const want = sidebarTabForPath(rp);
+                setSidebarTab(want);
+                if (want === 'files') setExpandedFolders((prev) => new Set(prev).add(folderNameOf(rp)));
                 setScrollSidebarTo({ path: rp, highlight: false });
               }}
               scrollToLine={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.line : null}
