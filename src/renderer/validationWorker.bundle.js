@@ -12269,6 +12269,9 @@
     if (pendingAttrs.length) flushElement();
     return result;
   }
+  function attrCascades(attrDef) {
+    return !!attrDef && attrDef.cascades_to_child_nodes === "true";
+  }
   function findAttrDefInContext(schema, name, parentTag) {
     if (!schema) return null;
     if (parentTag) {
@@ -12276,14 +12279,12 @@
       if (subNode) {
         const snAttr = subNode.attributes?.find((a) => a.key === name);
         if (snAttr) return snAttr;
+        const cascaded = schema.attributes?.find((a) => a.key === name && attrCascades(a));
+        return cascaded || null;
       }
     }
     const topAttr = schema.attributes?.find((a) => a.key === name);
     if (topAttr) return topAttr;
-    for (const sn of schema.subNodes || []) {
-      const snAttr = sn.attributes?.find((a) => a.key === name);
-      if (snAttr) return snAttr;
-    }
     return null;
   }
 
@@ -24823,7 +24824,7 @@
       } else {
         const subNode = mergedSchema.subNodes?.find((sn) => sn.id === parentTag);
         if (subNode) {
-          validInContext = subNode.attributes.some((a) => a.key === attr.nm) || mergedSchema.attributes.some((a) => a.key === attr.nm);
+          validInContext = subNode.attributes.some((a) => a.key === attr.nm) || mergedSchema.attributes.some((a) => a.key === attr.nm && a.cascades_to_child_nodes === "true");
         } else {
           validInContext = !!attr.d;
         }
@@ -25021,6 +25022,17 @@
         const searchStr = nodeSource ? `node_source="${nodeSource}"` : `key="${key2}"`;
         const pos = content.indexOf(searchStr, searchOffset);
         if (pos >= 0) searchOffset = pos + 1;
+        const isCentralId = el.getAttribute("is_central_identifier") === "true";
+        const isIdForLayer = el.getAttribute("is_id_for_layer") === "true";
+        if ((isCentralId || isIdForLayer) && el.getAttribute("is_localized") === "true") {
+          const flag = isCentralId ? "is_central_identifier" : "is_id_for_layer";
+          errors.push({
+            severity: "error",
+            file: relativePath,
+            line: lineAt2(pos),
+            message: `Identifier attribute "${key2}" (${flag}="true") must not set is_localized="true" \u2014 identifiers are opaque keys, never translated, spellchecked, or grammar-checked.`
+          });
+        }
         if (type === "existing-override") {
           if (!sharedAttrNames.has(key2)) {
             errors.push({

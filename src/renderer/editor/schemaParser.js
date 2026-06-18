@@ -158,6 +158,12 @@ function parseAttributeElement(el) {
     // gracefully at runtime (e.g. a base entity referencing optional
     // mod-introduced content). See design.md §31 for the default rules.
     'can_make_invalid_cross_links',
+    // Cascade control. By default a top-level attribute lives ONLY on the
+    // outermost node; it is not offered or accepted inside sub-nodes. When
+    // "true", the attribute applies on every node at any depth (e.g. copy_from,
+    // is_partial_record, internal_notes). See SharedMetaData.metadata and
+    // findAttrDefInContext / the autocomplete + validator context checks.
+    'cascades_to_child_nodes',
   ];
 
   for (const attr of optionals) {

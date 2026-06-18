@@ -196,31 +196,56 @@ export function buildAttrMap(tokens, schema) {
 }
 
 /**
- * Find attribute definition in merged schema, scoped to the correct context.
- * If parentTag matches a sub-node id, check that sub-node's attributes first.
- * Falls back to top-level attributes, then global sub-node search.
+ * Does this attribute definition cascade from an outer node into child nodes?
+ * By default an attribute is scoped to the node it's declared on; only those
+ * flagged `cascades_to_child_nodes="true"` in the schema apply on every node at
+ * any depth (genuinely universal fields like copy_from, is_partial_record,
+ * internal_notes — see SharedMetaData.metadata).
+ */
+export function attrCascades(attrDef) {
+  return !!attrDef && attrDef.cascades_to_child_nodes === 'true';
+}
+
+/**
+ * Find an attribute's schema definition, scoped strictly by NODE NAME.
+ *
+ * An attribute's meaning is determined by the node it sits on, never by where
+ * that node happens to live in the tree. So:
+ *   - If `parentTag` names a known sub-node, the attribute must be one of THAT
+ *     sub-node's own attributes, or a top-level attribute flagged to cascade
+ *     into children. We do NOT scan other sub-nodes, and a NON-cascading
+ *     top-level attribute (id, display_name, …) does not resolve here either —
+ *     it lives solely on the outermost node.
+ *   - Otherwise (root node, 'root', null, or an unrecognized outer tag) we
+ *     resolve against the full top-level set.
+ *
+ * Why no "search every sub-node" fallback: sibling sub-nodes routinely sit next
+ * to one another and each declares its own, same-named-but-differently-typed
+ * fields — e.g. severity_regular's `output` (int) vs severity_multiplicative's
+ * `multiplier` (float), or the root `type` (sub_id) vs slot's `type`
+ * (node-dropdown). Borrowing a sibling's (or the root's) definition gave the
+ * wrong type/tooltip/FK behavior and made one node appear to accept another's
+ * attributes. Name-scoped resolution also lets a node type nest arbitrarily — a
+ * `transition` under `state`, `all_of`, or `any_of` — and still resolve to its
+ * own attribute set.
  */
 export function findAttrDefInContext(schema, name, parentTag) {
   if (!schema) return null;
 
-  // If inside a sub-node, check that specific sub-node first
+  // Known sub-node: its own attributes first, then only cascading top-level attrs.
   if (parentTag) {
     const subNode = (schema.subNodes || []).find(sn => sn.id === parentTag);
     if (subNode) {
       const snAttr = subNode.attributes?.find(a => a.key === name);
       if (snAttr) return snAttr;
+      const cascaded = schema.attributes?.find((a) => a.key === name && attrCascades(a));
+      return cascaded || null;
     }
   }
 
-  // Check top-level attributes
+  // Root, 'root', null, or an unrecognized outer tag: the full top-level set.
   const topAttr = schema.attributes?.find((a) => a.key === name);
   if (topAttr) return topAttr;
-
-  // Fallback: check all sub-nodes (for cases where parentTag is the main node name)
-  for (const sn of schema.subNodes || []) {
-    const snAttr = sn.attributes?.find((a) => a.key === name);
-    if (snAttr) return snAttr;
-  }
 
   return null;
 }

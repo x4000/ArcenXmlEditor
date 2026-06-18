@@ -101,6 +101,31 @@ export function navigateToFKRow(tableName, id, ctx) {
   }
 }
 
+// Return {start, end} spanning the `<sub_node id="X"> … </sub_node>` block whose
+// id is `subId`, accounting for nested sub_nodes (so a parent block isn't cut
+// short at a child's closing tag). `end` is the offset of the matching
+// `</sub_node>`. Returns null if no such sub_node opening is present.
+function subNodeBlockRange(content, subId) {
+  const start = content.indexOf(`<sub_node id="${subId}"`);
+  if (start < 0) return null;
+  let depth = 0;
+  let i = start;
+  while (i < content.length) {
+    const open = content.indexOf('<sub_node', i + 1);
+    const close = content.indexOf('</sub_node>', i + 1);
+    if (close < 0) return { start, end: content.length };
+    if (open >= 0 && open < close) {
+      depth++;
+      i = open + '<sub_node'.length;
+    } else {
+      if (depth === 0) return { start, end: close };
+      depth--;
+      i = close + '</sub_node>'.length;
+    }
+  }
+  return { start, end: content.length };
+}
+
 // Find the end of an `<attribute …>` node (handles multi-line attributes).
 // An attribute ends with /> or </attribute>.
 function findAttrEnd(content, startIdx) {
@@ -159,6 +184,7 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
   const folderName = folderNameOf(activeRelPath);
   const folder = folders.find((f) => f.name === folderName);
   if (!folder) return;
+  const schemaNodeName = schemas?.[folderName]?.nodeName;
   const sharedRel = sharedMetadataRelPath;
   const activeLayer = layerByRelPath?.get(activeRelPath)?.layer;
 
@@ -184,10 +210,26 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
   const insertTarget = extRecord ? extRecord.metadataRelPath : folder.metadataRelPath;
   if (candidates.length === 0 && !insertTarget) return;
 
-  // Search each candidate for the literal `key="<attr>"` pattern.
+  // Search each candidate for the literal `key="<attr>"` pattern. When the
+  // clicked attribute sits inside a sub-node, search WITHIN that sub_node's
+  // block first so a same-named attribute in a SIBLING sub-node doesn't capture
+  // the jump (e.g. `cutoff` exists in both severity_regular and
+  // severity_multiplicative). Fall back to a global search afterward — that
+  // covers cascading top-level attrs declared outside any sub_node block.
+  const isSubNodeCtx = parentTag && parentTag !== 'root' && parentTag !== schemaNodeName;
   const findAttrInCandidate = (relPath) => {
     const content = getContent(relPath);
     if (!content) return null;
+    if (isSubNodeCtx) {
+      const block = subNodeBlockRange(content, parentTag);
+      if (block) {
+        const rel = content.slice(block.start, block.end).indexOf(`key="${attrName}"`);
+        if (rel >= 0) {
+          const abs = block.start + rel;
+          return { file: relPath, line: content.slice(0, abs).split('\n').length };
+        }
+      }
+    }
     const idx = content.indexOf(`key="${attrName}"`);
     if (idx < 0) return null;
     return { file: relPath, line: content.slice(0, idx).split('\n').length };

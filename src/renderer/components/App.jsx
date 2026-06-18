@@ -16,7 +16,7 @@ import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIn
 import { tokenize, buildAttrMap } from '../editor/xmlTokenizer';
 import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps } from '../editor/validation';
-import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from '../editor/spellcheck';
+import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix, isSpellcheckTarget, isMetadataSpellcheckTarget } from '../editor/spellcheck';
 import { extractGrammarTargets } from '../editor/grammarTargets';
 import { fileDisplayName } from '../editor/layerDisplay';
 import NSpell from 'nspell';
@@ -37,6 +37,51 @@ function replaceIdInValue(attrValue, oldId, newId) {
     const idx = p.indexOf(trimmed);
     return p.slice(0, idx) + newId + p.slice(idx + trimmed.length);
   }).join(',');
+}
+
+// Collect the [from, to) value ranges in `content` that spellchecking actually
+// targets. A bulk spelling replace must only rewrite text that could legitimately
+// hold the misspelling — never id / central-identifier values (the AI War `name`
+// key), tag names, FK references, numbers, etc. Mirrors findMisspelledWords'
+// target selection (isSpellcheckTarget) for XML and the tooltip-only rule for
+// metadata files.
+function spellcheckableValueRanges(content, mergedSchema, isMetadata) {
+  const ranges = [];
+  const tokens = tokenize(content);
+  if (isMetadata) {
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i].c !== 'an' || !isMetadataSpellcheckTarget(tokens[i].s)) continue;
+      for (let j = i + 1; j < Math.min(i + 4, tokens.length); j++) {
+        if (tokens[j].c === 'av') { ranges.push({ from: tokens[j].p, to: tokens[j].p + tokens[j].s.length }); break; }
+      }
+    }
+    return ranges;
+  }
+  if (!mergedSchema) return ranges;
+  for (const attr of buildAttrMap(tokens, mergedSchema)) {
+    if (attr.vs == null) continue;
+    if (!isSpellcheckTarget(attr)) continue;
+    ranges.push({ from: attr.vs, to: attr.ve });
+  }
+  return ranges;
+}
+
+// Replace every occurrence of oldText with newText, but only where it falls
+// inside one of `ranges` (non-overlapping, within [0, content.length]).
+function replaceWithinRanges(content, oldText, newText, ranges) {
+  if (!oldText || !ranges || ranges.length === 0) return content;
+  ranges.sort((a, b) => a.from - b.from);
+  let out = '';
+  let cursor = 0;
+  for (const r of ranges) {
+    const from = Math.max(r.from, cursor);
+    if (from >= r.to) continue;
+    out += content.slice(cursor, from);
+    out += content.slice(from, r.to).split(oldText).join(newText);
+    cursor = r.to;
+  }
+  out += content.slice(cursor);
+  return out;
 }
 
 function makeDevAwareChecker(nspell, devWordsRef) {
@@ -823,10 +868,30 @@ export default function App() {
 
   // ── Handle replace requests from validation window ──
   useEffect(() => {
+    // Apply a spelling replacement to one file's content, constrained to the
+    // text spellchecking targets — so a fix never bleeds into id / central-
+    // identifier values (the reported AI War `name`-key bug), tag names, FK
+    // refs, etc. Returns content unchanged when the file has no spellcheckable
+    // ranges (no schema, or nothing to fix), so untargeted files are left alone.
+    const replaceSpellingInFile = (file, content, oldText, newText) => {
+      const isMetadata = file.toLowerCase().endsWith('.metadata');
+      let mergedSchema = null;
+      if (!isMetadata) {
+        const folderName = folderNameByRelPathRef.current?.get(file);
+        const fileSchema = (folderName && schemasLatest.current) ? schemasLatest.current[folderName] : null;
+        mergedSchema = (fileSchema && sharedSchemaLatest.current)
+          ? buildMergedSchema(sharedSchemaLatest.current, fileSchema)
+          : null;
+      }
+      const ranges = spellcheckableValueRanges(content, mergedSchema, isMetadata);
+      if (ranges.length === 0) return content;
+      return replaceWithinRanges(content, oldText, newText, ranges);
+    };
+
     window.arcenApi.onRequestReplace((file, oldText, newText) => {
       const content = allFileContentsRef.current[file];
       if (!content) return;
-      const updated = content.replace(oldText, newText);
+      const updated = replaceSpellingInFile(file, content, oldText, newText);
       if (updated !== content) {
         allFileContentsRef.current[file] = updated;
         // Use functional update to check CURRENT state — the effect's [] deps means
@@ -966,7 +1031,7 @@ export default function App() {
       // updated values. Collect the modified files for the React-state pass below.
       const modifiedFiles = [];
       for (const [file, content] of Object.entries(allFileContentsRef.current)) {
-        const updated = content.split(oldText).join(newText);
+        const updated = replaceSpellingInFile(file, content, oldText, newText);
         if (updated !== content) {
           allFileContentsRef.current[file] = updated;
           window.arcenApi.writeFile(file, updated);

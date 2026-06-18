@@ -16,7 +16,7 @@
  * deprecated by the engine and stripped from the metadata files.
  */
 
-import { tokenize, buildAttrMap, findAttrDef } from './xmlTokenizer';
+import { tokenize, buildAttrMap } from './xmlTokenizer';
 import { buildMergedSchema, composeSchemaForFileLayer } from './schemaParser';
 import { resolveSwapChain, allowedTargetLayers } from './fkIndex';
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix } from './spellcheck';
@@ -555,11 +555,14 @@ export function validateXMLFile(content, relativePath, mergedSchema, fkIndex, lo
       // Top-level node — check if attr is a top-level attribute
       validInContext = mergedSchema.attributes.some((a) => a.key === attr.nm);
     } else {
-      // Inside a sub-node — check if attr belongs to that specific sub-node
+      // Inside a sub-node — the attr must be one of that sub-node's own
+      // attributes, or a top-level attribute flagged to cascade into children.
+      // A non-cascading top-level attribute (id, display_name, …) belongs only
+      // on the outermost node, so it's wrong-context here.
       const subNode = mergedSchema.subNodes?.find((sn) => sn.id === parentTag);
       if (subNode) {
         validInContext = subNode.attributes.some((a) => a.key === attr.nm) ||
-                         mergedSchema.attributes.some((a) => a.key === attr.nm);
+                         mergedSchema.attributes.some((a) => a.key === attr.nm && a.cascades_to_child_nodes === 'true');
       } else {
         // Unknown sub-node context — just check globally
         validInContext = !!attr.d;
@@ -799,6 +802,24 @@ export function validateMetadataFile(content, relativePath, sharedSchema, allFol
       const searchStr = nodeSource ? `node_source="${nodeSource}"` : `key="${key}"`;
       const pos = content.indexOf(searchStr, searchOffset);
       if (pos >= 0) searchOffset = pos + 1;
+
+      // Check 14: Identifier attributes must not be localized.
+      // is_central_identifier / is_id_for_layer mark opaque lookup keys (the
+      // row's id, the layer id) — never shown to players, never translated, and
+      // always skipped by spell/grammar checking. Setting is_localized="true" on
+      // one is a mistake (it's what caused AI War's `name` key — the id key
+      // there — to be wrongly spellchecked despite both flags being set).
+      const isCentralId = el.getAttribute('is_central_identifier') === 'true';
+      const isIdForLayer = el.getAttribute('is_id_for_layer') === 'true';
+      if ((isCentralId || isIdForLayer) && el.getAttribute('is_localized') === 'true') {
+        const flag = isCentralId ? 'is_central_identifier' : 'is_id_for_layer';
+        errors.push({
+          severity: 'error',
+          file: relativePath,
+          line: lineAt(pos),
+          message: `Identifier attribute "${key}" (${flag}="true") must not set is_localized="true" — identifiers are opaque keys, never translated, spellchecked, or grammar-checked.`,
+        });
+      }
 
       // Check 10: Invalid existing-override
       if (type === 'existing-override') {

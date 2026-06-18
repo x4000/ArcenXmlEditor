@@ -9,7 +9,7 @@
  */
 
 import { autocompletion, startCompletion } from '@codemirror/autocomplete';
-import { isInQuotes, getNodeContext, findAttrDef } from './xmlTokenizer';
+import { isInQuotes, getNodeContext, findAttrDefInContext } from './xmlTokenizer';
 import { naturalCompare } from './naturalSort';
 
 /**
@@ -92,30 +92,41 @@ function arcenCompletionSource(getSchema, onFKComplete) {
       const contextTag = tagSegment.match(/^<([\w.-]+)/);
       const contextName = contextTag ? contextTag[1] : null;
 
-      // Build attribute list scoped to context. Mirrors the validator's
-      // per-context "unknown attribute" check (validation.js):
-      //   - Top-level node: only merged top-level attrs (shared + table).
-      //     Sub-node-only attrs (e.g. debug_log_contemplation_details on
-      //     <contemplation_data>) used to leak into this list and the user
-      //     would happily accept the suggestion, only for the validator to
-      //     immediately flag it as wrong-context.
-      //   - Sub-node: that sub-node's own attrs, plus the shared/top-level
-      //     attrs (the validator allows those inside sub-nodes too).
+      // The valid attribute set depends on the node's POSITION, not just its
+      // tag name. Find the parent of the node we're typing into (the innermost
+      // open tag BEFORE this one started):
+      const parentContext = getNodeContext(doc, lastOpen);
+      const isOuterNode = !parentContext || parentContext === 'root';
+
+      // Build the attribute list:
+      //   - Record node (the schema's node_name), or an unknown node sitting
+      //     directly under <root>: the full merged top-level set. (An unknown
+      //     OUTER node still gets the full set — the intentionally lenient
+      //     "you're probably still naming this record" behavior.)
+      //   - A KNOWN sub-node, wherever it nests: its own attrs + only the
+      //     top-level attrs flagged cascades_to_child_nodes="true".
+      //   - An UNKNOWN CHILD node (nested, not a declared sub-node): only the
+      //     cascading top-level attrs. We must NOT dump the record node's whole
+      //     attribute set into a nonsense child — that was the bug where typing
+      //     in a junk child still offered id / display_name / etc.
       const attrNames = new Set();
+      const subNode = (schema.subNodes || []).find((sn) => sn.id === contextName);
+      const isRecordNode = contextName === schema.nodeName || contextName === 'root';
 
-      const isSubNodeContext =
-        contextName && contextName !== schema.nodeName && contextName !== 'root';
+      const addCascadingTopLevel = () => {
+        if (!schema.attributes) return;
+        for (const a of schema.attributes) {
+          if (a.cascades_to_child_nodes === 'true') attrNames.add(a.key);
+        }
+      };
 
-      if (isSubNodeContext) {
-        const subNode = (schema.subNodes || []).find((sn) => sn.id === contextName);
-        if (subNode) {
-          for (const a of subNode.attributes) attrNames.add(a.key);
-        }
-        if (schema.attributes) {
-          for (const a of schema.attributes) attrNames.add(a.key);
-        }
-      } else if (schema.attributes) {
-        for (const a of schema.attributes) attrNames.add(a.key);
+      if (subNode) {
+        for (const a of subNode.attributes) attrNames.add(a.key);
+        addCascadingTopLevel();
+      } else if (isRecordNode || isOuterNode) {
+        if (schema.attributes) for (const a of schema.attributes) attrNames.add(a.key);
+      } else {
+        addCascadingTopLevel();
       }
 
       const matches = [...attrNames]
@@ -127,7 +138,12 @@ function arcenCompletionSource(getSchema, onFKComplete) {
       return {
         from,
         options: matches.map((label) => {
-          const def = findAttrDef(schema, label);
+          // Resolve the definition IN THIS NODE'S CONTEXT, not globally: an
+          // attribute name can mean different things on different nodes (e.g.
+          // `type` is a sub_id on the root but a node-dropdown on <slot>), and
+          // the apply-behavior below — FK/string-dropdown auto-open, bool
+          // default — must follow the definition that actually applies here.
+          const def = findAttrDefInContext(schema, label, contextName);
           const isBool = def && (def.type === 'bool' || def.type === 'int-bool');
           const isFK = def && (def.type === 'node-dropdown' || def.type === 'node-list');
           // string-dropdown opens the same picker as FK after completion.
