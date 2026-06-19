@@ -862,9 +862,18 @@ export default function App() {
       }, 100);
     });
 
-    window.arcenApi.onTabAdded(async (raw) => {
+    window.arcenApi.onTabAdded(async (raw, buffer) => {
       const relativePath = norm(raw);
-      const content = await window.arcenApi.readFile(relativePath);
+      // A lossless tear-off carries the source window's { content, saved }; seed
+      // from it so unsaved edits move with the tab instead of re-reading disk.
+      let content, saved;
+      if (buffer && typeof buffer.content === 'string') {
+        content = buffer.content;
+        saved = typeof buffer.saved === 'string' ? buffer.saved : buffer.content;
+      } else {
+        content = await window.arcenApi.readFile(relativePath);
+        saved = content;
+      }
       const type = relativePath.endsWith('.metadata') ? 'schema' : 'xml';
       setTabs(prev => {
         if (prev.some(t => t.relativePath === relativePath)) return prev;
@@ -872,7 +881,7 @@ export default function App() {
         return [...prev, { relativePath, type }];
       });
       setFileContents(prev => ({ ...prev, [relativePath]: content }));
-      setSavedContents(prev => ({ ...prev, [relativePath]: content }));
+      setSavedContents(prev => ({ ...prev, [relativePath]: saved }));
       allFileContentsRef.current[relativePath] = content;
       setTimeout(() => {
         setTabs(current => {
@@ -1559,6 +1568,18 @@ export default function App() {
       .filter((t) => fileContents[t.relativePath] !== savedContents[t.relativePath])
       .map((t) => t.relativePath)
   ), [tabs, fileContents, savedContents]);
+
+  // Tear a tab off, carrying its in-memory buffer (current + saved baseline) so
+  // unsaved edits move with it losslessly — the target seeds from this instead
+  // of re-reading disk.
+  const handleDetachTab = useCallback((relativePath, screenX, screenY) => {
+    const content = fileContentsLatest.current[relativePath];
+    const saved = savedContentsLatest.current[relativePath];
+    const buffer = typeof content === 'string'
+      ? { content, saved: typeof saved === 'string' ? saved : content }
+      : null;
+    window.arcenApi.detachTabAtPosition(relativePath, screenX, screenY, buffer);
+  }, []);
 
   // ── Open file ──
   const openFile = useCallback(async (relativePath, type = 'xml') => {
@@ -3547,6 +3568,7 @@ export default function App() {
           }}
           onClose={(vi) => closeTab(visibleTabs[vi]?.realIndex)}
           modifiedFiles={modifiedFiles}
+          onDetachTab={handleDetachTab}
           onContextMenu={(vi, x, y) => handleTabContextMenu(visibleTabs[vi]?.realIndex, x, y)}
           onReorder={(fromVi, toVi) => {
             const fromReal = visibleTabs[fromVi]?.realIndex;

@@ -162,8 +162,8 @@ contextBridge.exposeInMainWorld('arcenApi', {
 
   // Multi-window support
   getWindowInfo: () => ipcRenderer.invoke('get-window-info'),
-  detachTabAtPosition: (relativePath, screenX, screenY) =>
-    ipcRenderer.invoke('detach-tab-at-position', relativePath, screenX, screenY),
+  detachTabAtPosition: (relativePath, screenX, screenY, buffer) =>
+    ipcRenderer.invoke('detach-tab-at-position', relativePath, screenX, screenY, buffer),
   registerWindowTabs: (tabs) => ipcRenderer.invoke('register-window-tabs', tabs),
   focusSidebarOnFile: (relativePath, opts) => ipcRenderer.invoke('focus-sidebar-on-file', relativePath, opts),
   // Report this window's currently-active file so the main window can later
@@ -193,7 +193,7 @@ contextBridge.exposeInMainWorld('arcenApi', {
   },
   onTabAdded: (callback) => {
     ipcRenderer.removeAllListeners('tab-added');
-    ipcRenderer.on('tab-added', (_event, relativePath) => callback(relativePath));
+    ipcRenderer.on('tab-added', (_event, relativePath, buffer) => callback(relativePath, buffer));
   },
   onFocusSidebarOnFile: (callback) => {
     ipcRenderer.removeAllListeners('focus-sidebar-on-file');

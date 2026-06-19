@@ -5,7 +5,7 @@ const vcsStore = require('../editor/vcsStore');
 
 // `layerByRelPath` maps relativePath → { layer, layerNum } so tab labels can
 // carry the [DLC<N>] tag. Absent (narrow mode / detached fallback) → no tags.
-export default function TabBar({ tabs, activeIndex, onSelect, onClose, modifiedFiles, onContextMenu, onReorder, layerByRelPath }) {
+export default function TabBar({ tabs, activeIndex, onSelect, onClose, modifiedFiles, onDetachTab, onContextMenu, onReorder, layerByRelPath }) {
   const [dragIdx, setDragIdx] = useState(null);
   const [dropIdx, setDropIdx] = useState(null);
   const [vcsState, setVcsState] = useState({ statusBackendLive: false, dataByRel: new Map() });
@@ -75,16 +75,14 @@ export default function TabBar({ tabs, activeIndex, onSelect, onClose, modifiedF
                 const sy = e.screenY;
 
                 if (sx < winX || sx > winX + winW || sy < winY || sy > winY + winH) {
-                  // Dropped outside the window — detach this tab. The target
-                  // window reloads the tab from disk, so confirm first if it
-                  // has unsaved edits rather than silently dropping them.
+                  // Dropped outside the window — detach this tab. The parent
+                  // supplies the in-memory buffer so any unsaved edits move with
+                  // it (lossless tear-off); fall back to the bare IPC if no
+                  // handler was wired up.
                   const relPath = tabs[dragIdx]?.relativePath;
-                  if (relPath && window.arcenApi?.detachTabAtPosition) {
-                    const name = relPath.split('/').pop();
-                    if (!modifiedFiles.has(relPath)
-                        || window.confirm(`"${name}" has unsaved changes that will be lost if it moves to another window. Move anyway?`)) {
-                      window.arcenApi.detachTabAtPosition(relPath, sx, sy);
-                    }
+                  if (relPath) {
+                    if (onDetachTab) onDetachTab(relPath, sx, sy);
+                    else if (window.arcenApi?.detachTabAtPosition) window.arcenApi.detachTabAtPosition(relPath, sx, sy);
                   }
                 }
               }

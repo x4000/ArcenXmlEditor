@@ -221,14 +221,26 @@ export default function DetachedApp({ windowId }) {
       const restoredTabs = [];
       const restoredContents = {};
       const restoredSaved = {};
+      // A tear-off into THIS newly-created window hands over the source's
+      // in-memory buffer (one-shot, in the session payload); seed from it so
+      // unsaved edits aren't lost to a disk re-read.
+      const seedBuffers = detachedSession?.seedBuffers || {};
       for (const relPath of tabPaths) {
-        const content = await window.arcenApi.readFile(relPath);
+        const seed = seedBuffers[relPath];
+        let content, saved;
+        if (seed && typeof seed.content === 'string') {
+          content = seed.content;
+          saved = typeof seed.saved === 'string' ? seed.saved : seed.content;
+        } else {
+          content = await window.arcenApi.readFile(relPath);
+          saved = content;
+        }
         restoredTabs.push({
           relativePath: relPath,
           type: relPath.endsWith('.metadata') ? 'schema' : 'xml',
         });
         restoredContents[relPath] = content;
-        restoredSaved[relPath] = content;
+        restoredSaved[relPath] = saved;
       }
       setTabs(restoredTabs);
       setFileContents(restoredContents);
@@ -310,9 +322,18 @@ export default function DetachedApp({ windowId }) {
   // blank after dragging a tab out.
   useEffect(() => {
     const norm = (p) => (typeof p === 'string' ? p.replace(/\\/g, '/') : p);
-    window.arcenApi.onTabAdded(async (raw) => {
+    window.arcenApi.onTabAdded(async (raw, buffer) => {
       const relativePath = norm(raw);
-      const content = await window.arcenApi.readFile(relativePath);
+      // A lossless tear-off carries the source window's { content, saved }; seed
+      // from it so unsaved edits move with the tab instead of re-reading disk.
+      let content, saved;
+      if (buffer && typeof buffer.content === 'string') {
+        content = buffer.content;
+        saved = typeof buffer.saved === 'string' ? buffer.saved : buffer.content;
+      } else {
+        content = await window.arcenApi.readFile(relativePath);
+        saved = content;
+      }
       const type = relativePath.endsWith('.metadata') ? 'schema' : 'xml';
       setTabs(prev => {
         const dup = prev.findIndex(t => t.relativePath === relativePath);
@@ -322,7 +343,7 @@ export default function DetachedApp({ windowId }) {
         return next;
       });
       setFileContents(prev => ({ ...prev, [relativePath]: content }));
-      setSavedContents(prev => ({ ...prev, [relativePath]: content }));
+      setSavedContents(prev => ({ ...prev, [relativePath]: saved }));
       syncTabs();
     });
 
@@ -380,6 +401,17 @@ export default function DetachedApp({ windowId }) {
   const savedContentsLatest = useRef(savedContents);
   useEffect(() => { fileContentsLatest.current = fileContents; }, [fileContents]);
   useEffect(() => { savedContentsLatest.current = savedContents; }, [savedContents]);
+
+  // Tear a tab off this window, carrying its in-memory buffer (current + saved
+  // baseline) so unsaved edits move with it losslessly.
+  const handleDetachTab = useCallback((relativePath, screenX, screenY) => {
+    const content = fileContentsLatest.current[relativePath];
+    const saved = savedContentsLatest.current[relativePath];
+    const buffer = typeof content === 'string'
+      ? { content, saved: typeof saved === 'string' ? saved : content }
+      : null;
+    window.arcenApi.detachTabAtPosition(relativePath, screenX, screenY, buffer);
+  }, []);
 
   useEffect(() => {
     // Normalize any backslash separators on incoming paths so content
@@ -967,6 +999,7 @@ export default function DetachedApp({ windowId }) {
             }}
             onClose={closeTab}
             modifiedFiles={modifiedFiles}
+            onDetachTab={handleDetachTab}
             onContextMenu={(i, x, y) => handleTabContextMenu(i, x, y)}
             onReorder={(from, to) => {
               setTabs(prev => {

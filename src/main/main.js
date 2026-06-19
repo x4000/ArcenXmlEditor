@@ -2175,7 +2175,11 @@ function findWindowEntryAt(screenX, screenY) {
   return null;
 }
 
-ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, screenY) => {
+ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, screenY, buffer) => {
+  // `buffer` (optional) carries the source window's in-memory { content, saved }
+  // for this tab, so an unsaved edit moves with it instead of the target
+  // re-reading stale content from disk (lossless tear-off).
+  const seed = buffer && typeof buffer.content === 'string' ? buffer : null;
   // Drop onto the topmost window under the cursor, if any.
   const hit = findWindowEntryAt(screenX, screenY);
   if (hit) {
@@ -2183,7 +2187,7 @@ ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, s
     // Move tab to it
     if (!entry.tabs.includes(relativePath)) {
       entry.tabs.push(relativePath);
-      entry.browserWindow.webContents.send('tab-added', relativePath);
+      entry.browserWindow.webContents.send('tab-added', relativePath, seed);
     }
     // Remove from source window(s)
     for (const [srcId, srcEntry] of windowRegistry) {
@@ -2213,6 +2217,12 @@ ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, s
     }
   }
   createDetachedWindow(windowId, [relativePath], screenX - 100, screenY - 30);
+  // Stash the in-memory buffer so the new window seeds from it (via
+  // get-detached-session) instead of re-reading disk — one-shot, never persisted.
+  if (seed) {
+    const newEntry = windowRegistry.get(windowId);
+    if (newEntry) newEntry.seedBuffers = { [relativePath]: seed };
+  }
   return { action: 'created', windowId };
 });
 
@@ -2324,11 +2334,16 @@ ipcMain.handle('get-detached-session', (event) => {
   // Then check saved session (for restored windows)
   const session = loadSession();
   const saved = session.detachedWindows?.find(d => d.windowId === id);
+  // One-shot seed buffers from a lossless tear-off into a NEW window: hand them
+  // to the renderer once, then drop them so they never persist or re-seed.
+  const seedBuffers = entry?.seedBuffers || null;
+  if (entry && entry.seedBuffers) delete entry.seedBuffers;
   // Per-tab data is in the central file state registry, not here
   return {
     windowId: id,
     tabs: entry?.tabs || saved?.tabs || [],
     activeTab: saved?.activeTab ?? 0,
+    seedBuffers,
   };
 });
 
