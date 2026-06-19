@@ -1142,10 +1142,22 @@ function saveFullSession() {
   }
   session.detachedWindows = detachedWindows;
 
-  // Central file state registry
+  // Central file state registry. Persist only the scroll/cursor state of files
+  // still open in some window — otherwise fileStates accumulates an entry for
+  // every file ever opened and grows without bound across restarts. (Pruning
+  // here, at save time, is safe: every window has long since registered its
+  // tabs, so the open-set is complete.)
+  const openFiles = new Set();
+  for (const entry of windowRegistry.values()) {
+    for (const t of (entry.tabs || [])) openFiles.add(typeof t === 'string' ? t.replace(/\\/g, '/') : t);
+  }
   const fileStates = {};
   for (const [p, state] of fileStateRegistry) {
-    fileStates[p] = state;
+    // Safety: an empty open-set almost always means windows haven't registered
+    // their tabs yet (not that everything is genuinely closed), so skip pruning
+    // entirely in that case — keeping a few stale entries is far better than
+    // wiping every file's scroll/cursor state.
+    if (openFiles.size === 0 || openFiles.has(typeof p === 'string' ? p.replace(/\\/g, '/') : p)) fileStates[p] = state;
   }
   session.fileStates = fileStates;
 
@@ -2144,30 +2156,48 @@ ipcMain.handle('get-window-info', (event) => {
   return { windowId: id, mode: id === 'main' ? 'main' : 'detached' };
 });
 
-ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, screenY) => {
-  // Check if the drop position is within any existing window
+// First (registry-order) non-minimized window whose bounds contain the point.
+// Electron doesn't expose true OS z-order, so overlapping windows fall back to
+// registry order rather than guessing — but half-open bounds and skipping
+// minimized/destroyed windows fix the concrete mis-routes (shared edges
+// double-claiming, minimized windows stealing the drop). We deliberately do NOT
+// prefer the focused window: during a tear-off drag the SOURCE window is the
+// focused one, so preferring it would mis-route a drop back onto the source.
+function findWindowEntryAt(screenX, screenY) {
   for (const [id, entry] of windowRegistry) {
-    if (!entry.browserWindow || entry.browserWindow.isDestroyed()) continue;
-    const bounds = entry.browserWindow.getBounds();
-    if (screenX >= bounds.x && screenX <= bounds.x + bounds.width &&
-        screenY >= bounds.y && screenY <= bounds.y + bounds.height) {
-      // Drop is on this window — move tab to it
-      if (!entry.tabs.includes(relativePath)) {
-        entry.tabs.push(relativePath);
-        entry.browserWindow.webContents.send('tab-added', relativePath);
-      }
-      // Remove from source window
-      for (const [srcId, srcEntry] of windowRegistry) {
-        if (srcId === id) continue;
-        const idx = srcEntry.tabs.indexOf(relativePath);
-        if (idx >= 0) {
-          srcEntry.tabs.splice(idx, 1);
+    const win = entry.browserWindow;
+    if (!win || win.isDestroyed() || win.isMinimized()) continue;
+    const b = win.getBounds();
+    if (screenX >= b.x && screenX < b.x + b.width && screenY >= b.y && screenY < b.y + b.height) {
+      return { id, entry };
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('detach-tab-at-position', async (_event, relativePath, screenX, screenY) => {
+  // Drop onto the topmost window under the cursor, if any.
+  const hit = findWindowEntryAt(screenX, screenY);
+  if (hit) {
+    const { id, entry } = hit;
+    // Move tab to it
+    if (!entry.tabs.includes(relativePath)) {
+      entry.tabs.push(relativePath);
+      entry.browserWindow.webContents.send('tab-added', relativePath);
+    }
+    // Remove from source window(s)
+    for (const [srcId, srcEntry] of windowRegistry) {
+      if (srcId === id) continue;
+      const idx = srcEntry.tabs.indexOf(relativePath);
+      if (idx >= 0) {
+        srcEntry.tabs.splice(idx, 1);
+        if (srcEntry.browserWindow && !srcEntry.browserWindow.isDestroyed()) {
           srcEntry.browserWindow.webContents.send('tab-removed', relativePath);
         }
       }
-      entry.browserWindow.focus();
-      return { action: 'moved', targetWindowId: id };
     }
+    entry.browserWindow.focus();
+    return { action: 'moved', targetWindowId: id };
   }
 
   // Not on any window — create a new detached window

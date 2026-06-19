@@ -1349,6 +1349,16 @@ function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFiles, 
     }
   };
   const [expanded, setExpanded] = useState(new Set(favorites.map(g => g.name)));
+  // A group created externally (e.g. a tab-bar "Add to Favorites") should
+  // default to open rather than collapsed — the mount-only seed misses it.
+  useEffect(() => {
+    setExpanded(prev => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const g of favorites) if (!next.has(g.name)) { next.add(g.name); changed = true; }
+      return changed ? next : prev;
+    });
+  }, [favorites]);
   const [newGroupInput, setNewGroupInput] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const newGroupRef = useRef(null);

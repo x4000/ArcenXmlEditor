@@ -1500,6 +1500,9 @@ export default function App() {
       }
       nav.list.splice(newPos, 1);
     }
+    // No live forward target remained (entries were spliced out) — resync so the
+    // forward button doesn't stay stale-enabled.
+    setNavState({ canBack: nav.pos > 0, canForward: nav.pos < nav.list.length - 1 });
   }, [tabs, captureSelectionNow]);
 
   // Mouse button 4/5 for back/forward
@@ -3838,7 +3841,12 @@ export default function App() {
         >
           <div
             style={{
-              position: 'fixed', top: tabContextMenu.y, left: tabContextMenu.x, zIndex: 999,
+              position: 'fixed',
+              // Clamp into the viewport so a menu opened near the right/bottom
+              // edge isn't pushed off-window where its items would be unclickable.
+              top: Math.max(6, Math.min(tabContextMenu.y, window.innerHeight - (tabContextMenu.items.length * 28 + 8) - 6)),
+              left: Math.max(6, Math.min(tabContextMenu.x, window.innerWidth - 202)),
+              zIndex: 999,
               background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4,
               boxShadow: '0 2px 8px rgba(0,0,0,0.25)', minWidth: 180, padding: '4px 0',
             }}

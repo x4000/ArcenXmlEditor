@@ -555,6 +555,9 @@ export default function DetachedApp({ windowId }) {
       }
       nav.list.splice(newPos, 1);
     }
+    // No live forward target remained (entries were spliced out) — resync so the
+    // forward button doesn't stay stale-enabled.
+    setNavState({ canBack: nav.pos > 0, canForward: nav.pos < nav.list.length - 1 });
   }, [tabs, captureSelectionNow]);
 
   const handleIdRename = useCallback((oldId, newId, sourceRelPath) => {

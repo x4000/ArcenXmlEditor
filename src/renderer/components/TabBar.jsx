@@ -75,10 +75,16 @@ export default function TabBar({ tabs, activeIndex, onSelect, onClose, modifiedF
                 const sy = e.screenY;
 
                 if (sx < winX || sx > winX + winW || sy < winY || sy > winY + winH) {
-                  // Dropped outside the window — detach this tab
+                  // Dropped outside the window — detach this tab. The target
+                  // window reloads the tab from disk, so confirm first if it
+                  // has unsaved edits rather than silently dropping them.
                   const relPath = tabs[dragIdx]?.relativePath;
                   if (relPath && window.arcenApi?.detachTabAtPosition) {
-                    window.arcenApi.detachTabAtPosition(relPath, sx, sy);
+                    const name = relPath.split('/').pop();
+                    if (!modifiedFiles.has(relPath)
+                        || window.confirm(`"${name}" has unsaved changes that will be lost if it moves to another window. Move anyway?`)) {
+                      window.arcenApi.detachTabAtPosition(relPath, sx, sy);
+                    }
                   }
                 }
               }

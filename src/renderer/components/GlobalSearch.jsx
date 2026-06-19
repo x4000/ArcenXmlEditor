@@ -227,6 +227,17 @@ export default function GlobalSearch({
     const regex = buildRegex(effectiveQuery);
     if (!regex) return;
 
+    // A pattern that can match the empty string (e.g. `a*`, `x?`, `(foo)?`)
+    // would splice the replacement between every character and corrupt the
+    // file, while still reporting matches — refuse it rather than relying on
+    // the match/diff checks below, which empty matches slip past.
+    let canMatchEmpty = false;
+    try { canMatchEmpty = new RegExp(regex.source, regex.flags.replace('g', '')).test(''); } catch (_) { /* ignore */ }
+    if (canMatchEmpty) {
+      setReplaceStatus({ text: `Pattern can match an empty string — replace refused (it would corrupt files).`, kind: 'none' });
+      return;
+    }
+
     // Save both histories — the user's mental model is "I searched for X
     // and replaced with Y", even if they didn't click Search explicitly.
     addHistoryEntry('global-find', effectiveQuery);
