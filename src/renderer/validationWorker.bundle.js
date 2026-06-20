@@ -24690,6 +24690,7 @@
     const ctxFolderName = ctx?.folderName || relativePath.split("/")[0];
     const expansionDirNameToLayer = ctx?.expansionDirNameToLayer || {};
     const modFolderNameToLayer = ctx?.modFolderNameToLayer || {};
+    const yamlSources = ctx?.yamlSources || null;
     const modDisplayByLayer = ctx?.modDisplayByLayer || null;
     const fileModExtras = ctx?.fileModExtras || null;
     if (!mergedSchema) return errors;
@@ -25059,6 +25060,24 @@
               line,
               message: `Invalid local reference: "${val}" is not a <${srcType}> id defined in this <${mergedSchema.nodeName}>`
             });
+          }
+        }
+      }
+      if ((attr.tp === "yaml-list" || attr.tp === "yaml-dropdown") && attr.d?.yaml_source && attr.v) {
+        const src = yamlSources ? yamlSources[attr.d.yaml_source] : null;
+        if (src && src.ok && Array.isArray(src.values)) {
+          const valid = new Set(src.values);
+          const vals = attr.tp === "yaml-list" ? attr.v.split(",").map((s) => s.trim()).filter(Boolean) : [attr.v];
+          for (const val of vals) {
+            if (!val || val === "None" || extraAllowed?.has(val)) continue;
+            if (!valid.has(val)) {
+              errors.push({
+                severity: "error",
+                file: relativePath,
+                line,
+                message: `Invalid ${attr.nm}: "${val}" is not a slot or group in the linked ${attr.d.yaml_source}`
+              });
+            }
           }
         }
       }

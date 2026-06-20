@@ -99,6 +99,27 @@ export function parseMetadata(xmlContent, folderName) {
     subNodes.push(subNode);
   }
 
+  // <yaml_source> declarations — external (cross-YAML) FK sources. Parsed for
+  // reference (e.g. so validation can name the source); the actual resolution to
+  // value sets happens in the main process (it reads the linked YAML files).
+  const yamlSources = [];
+  for (const ysEl of root.querySelectorAll(':scope > yaml_source')) {
+    const extracts = [];
+    for (const exEl of ysEl.querySelectorAll(':scope > extract')) {
+      extracts.push({
+        pattern: exEl.getAttribute('pattern') || '',
+        field: exEl.getAttribute('field') || '',
+        name_key: exEl.getAttribute('name_key') || undefined,
+      });
+    }
+    yamlSources.push({
+      id: ysEl.getAttribute('id') || '',
+      folder: ysEl.getAttribute('folder') || '',
+      link_guid_field: ysEl.getAttribute('link_guid_field') || '',
+      extracts,
+    });
+  }
+
   // Surface direct children of <root> that aren't one of the recognized tags
   // (`attribute`, `sub_node`). Without this, common typos like `<atribute>`
   // are silently dropped — the mod author thinks their schema has 6 fields,
@@ -106,7 +127,7 @@ export function parseMetadata(xmlContent, folderName) {
   // now (the validator window pulls from a different pipeline), but it
   // surfaces immediately in dev mode and is grep-able for users who notice
   // "my new schema entries aren't taking effect."
-  const KNOWN_ROOT_CHILDREN = new Set(['attribute', 'sub_node']);
+  const KNOWN_ROOT_CHILDREN = new Set(['attribute', 'sub_node', 'yaml_source']);
   for (const child of root.children) {
     const tag = child.nodeName;
     if (KNOWN_ROOT_CHILDREN.has(tag)) continue;
@@ -129,7 +150,7 @@ export function parseMetadata(xmlContent, folderName) {
     }
   }
 
-  return { nodeName, neverValidate, isForSingleRoot, attributes, subNodes, overrides, folderName };
+  return { nodeName, neverValidate, isForSingleRoot, attributes, subNodes, overrides, yamlSources, folderName };
 }
 
 function parseAttributeElement(el) {
@@ -147,6 +168,10 @@ function parseAttributeElement(el) {
     // sub_node type whose `local_key` values are the valid (record-scoped)
     // targets. The self-FK analogue of node_source. See buildLocalKeyIndex.
     'local_source',
+    // yaml_source: for `yaml-dropdown` / `yaml-list` types — names a top-level
+    // <yaml_source> declaration whose resolved external values are the valid
+    // targets (cross-YAML FK via a Unity GUID link). See §33 / main.js.
+    'yaml_source',
     'tooltip', 'description',
     'is_localized',
     // ID-like flags — spellcheck and other string-handling logic should treat these

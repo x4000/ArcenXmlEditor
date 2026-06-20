@@ -150,6 +150,7 @@ function arcenCompletionSource(getSchema, onFKComplete) {
           // completion (the host resolves their options).
           const isStringDropdown = def && def.type === 'string-dropdown';
           const isLocalDropdown = def && def.type === 'local-dropdown';
+          const isYamlFK = def && (def.type === 'yaml-dropdown' || def.type === 'yaml-list');
           const defaultVal = isBool ? (def.type === 'bool' ? 'true' : '1') : '';
 
           return {
@@ -171,8 +172,8 @@ function arcenCompletionSource(getSchema, onFKComplete) {
                   changes: { from, to, insert },
                   selection: { anchor: cursorPos },
                 });
-                // If FK / string-dropdown / local-dropdown, trigger the picker.
-                if ((isFK || isStringDropdown || isLocalDropdown) && onFKComplete) {
+                // If FK / string-dropdown / local-dropdown / yaml-FK, trigger the picker.
+                if ((isFK || isStringDropdown || isLocalDropdown || isYamlFK) && onFKComplete) {
                   setTimeout(() => onFKComplete(view, def, cursorPos), 20);
                 }
               }

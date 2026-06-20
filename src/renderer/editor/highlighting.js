@@ -248,6 +248,13 @@ export function createSchemaDecorations(getSchema, theme) {
               valueColor = colors.localRef;
               underline = true;
               break;
+            case 'yaml-dropdown':
+            case 'yaml-list':
+              // External cross-YAML FK (e.g. archetype slots) — clickable,
+              // colored like an FK list.
+              valueColor = colors.fkList;
+              underline = true;
+              break;
             case 'int-textbox':
             case 'float-textbox':
             case 'range-int':

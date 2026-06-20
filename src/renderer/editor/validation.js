@@ -266,6 +266,8 @@ export function validateXMLFile(content, relativePath, mergedSchema, fkIndex, lo
   const ctxFolderName = ctx?.folderName || relativePath.split('/')[0];
   const expansionDirNameToLayer = ctx?.expansionDirNameToLayer || {};
   const modFolderNameToLayer = ctx?.modFolderNameToLayer || {};
+  // Resolved external-YAML FK values for this file (island yaml-list/yaml-dropdown).
+  const yamlSources = ctx?.yamlSources || null;
   const modDisplayByLayer = ctx?.modDisplayByLayer || null;
   // The mod-level baseline extras for this file. If the file lives in a mod
   // layer, the mod's required_mods + required_expansions (from ModDetails.xml)
@@ -739,6 +741,31 @@ export function validateXMLFile(content, relativePath, mergedSchema, fkIndex, lo
             severity: 'error', file: relativePath, line,
             message: `Invalid local reference: "${val}" is not a <${srcType}> id defined in this <${mergedSchema.nodeName}>`,
           });
+        }
+      }
+    }
+
+    // Check 16: external-YAML FK (yaml-list / yaml-dropdown). The value(s) must
+    // be in the resolved value set of the named yaml_source (a cross-file ref
+    // followed through a GUID link — e.g. a channel's `slots` against the linked
+    // archetype's slot + slot-group names). If the source didn't resolve (no
+    // GUID link / target missing), we can't judge validity, so we SKIP rather
+    // than flag. Blank and node_extra_allowed values are accepted.
+    if ((attr.tp === 'yaml-list' || attr.tp === 'yaml-dropdown') && attr.d?.yaml_source && attr.v) {
+      const src = yamlSources ? yamlSources[attr.d.yaml_source] : null;
+      if (src && src.ok && Array.isArray(src.values)) {
+        const valid = new Set(src.values);
+        const vals = attr.tp === 'yaml-list'
+          ? attr.v.split(',').map((s) => s.trim()).filter(Boolean)
+          : [attr.v];
+        for (const val of vals) {
+          if (!val || val === 'None' || extraAllowed?.has(val)) continue;
+          if (!valid.has(val)) {
+            errors.push({
+              severity: 'error', file: relativePath, line,
+              message: `Invalid ${attr.nm}: "${val}" is not a slot or group in the linked ${attr.d.yaml_source}`,
+            });
+          }
         }
       }
     }

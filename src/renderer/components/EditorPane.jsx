@@ -184,6 +184,7 @@ export default function EditorPane({
   fileLayer,
   fileExtraLayers,
   composedMergedSchema,
+  yamlSources,
 }) {
   const containerRef = useRef(null);
   const wrapperRef = useRef(null);
@@ -244,11 +245,15 @@ export default function EditorPane({
   fileLayerRef.current = fileLayer || 'base';
   const fileExtraLayersRef = useRef(null);
   fileExtraLayersRef.current = fileExtraLayers || null;
+  // Resolved external-YAML FK values for this file: { [sourceId]: { values, ok } }.
+  const yamlSourcesRef = useRef(null);
+  yamlSourcesRef.current = yamlSources || null;
 
   const getSchema = useCallback(() => schemaRef.current, []);
   const getFKIndex = useCallback(() => fkIndexRef.current, []);
   const getFileLayer = useCallback(() => fileLayerRef.current, []);
   const getFileExtraLayers = useCallback(() => fileExtraLayersRef.current, []);
+  const getYamlSources = useCallback(() => yamlSourcesRef.current, []);
   const getSpellchecker = useCallback(() => spellcheckerRef.current, []);
 
   // When schema first becomes available after being null (detached window
@@ -598,9 +603,27 @@ export default function EditorPane({
                 options, x: coords.left, y: coords.bottom,
               });
             }
+          } else if ((def.type === 'yaml-list' || def.type === 'yaml-dropdown') && def.yaml_source) {
+            // yaml-FK completed — open the picker with the resolved external
+            // value set (+ any node_extra_allowed) for this file's source.
+            const src = (getYamlSources() || {})[def.yaml_source];
+            let options = (src && src.ok && Array.isArray(src.values)) ? src.values.slice() : [];
+            if (def.node_extra_allowed) {
+              const extraList = def.node_extra_allowed.split(',').map((s) => s.trim()).filter(Boolean);
+              options = [...extraList, ...options.filter((o) => !extraList.includes(o))];
+            }
+            const coords = view.coordsAtPos(valuePos);
+            if (coords && options.length) {
+              const attr = { vs: valuePos, ve: valuePos, v: '', src: null };
+              if (def.type === 'yaml-list') {
+                setMultiSelect({ view, attr, options, currentValues: [], x: coords.left, y: coords.bottom });
+              } else {
+                setDropdown({ view, attr, options, x: coords.left, y: coords.bottom });
+              }
+            }
           }
         }),
-        createClickHandler(getSchema, getFKIndex, callbacks, getFileLayer, getFileExtraLayers),
+        createClickHandler(getSchema, getFKIndex, callbacks, getFileLayer, getFileExtraLayers, getYamlSources),
         createContextMenu(getSchema, contextCallbacks),
         createSpellcheckDecorations(getSchema, getSpellchecker, false),
       );

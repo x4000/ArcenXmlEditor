@@ -135,6 +135,12 @@ export default function App() {
   const [islandSchemaByRelPath, setIslandSchemaByRelPath] = useState(() => new Map());
   const islandRelPathsRef = useRef(new Set());        // data files only → view-only guard
   const islandAllRelPathsRef = useRef(new Set());     // data files + each island's metadata → sidebar-tab stickiness
+  // Resolved external-YAML FK values (cross-file refs via GUID links), keyed by
+  // island data-file relPath then yaml_source id: { values, ok, targetRelPath }.
+  // Populates the yaml-list dropdowns and drives their validation. Re-pushed by
+  // main when a referenced source file changes (onIslandYamlSourcesChanged).
+  const [islandYamlSources, setIslandYamlSources] = useState({});
+  const islandYamlSourcesRef = useRef({});
   // Mod schema extensions, parsed and indexed by (modLayer, folderName).
   // An extension contributes additional attributes / sub_nodes that apply
   // when validating files in that mod (and any mod that requires it). See
@@ -406,6 +412,8 @@ export default function App() {
     setModSchemaExtensionsList(data.schemaExtensions || []);
     await loadExtensionsAndIndex(data.schemaExtensions);
     await loadIslands(data.islands);
+    islandYamlSourcesRef.current = data.islandYamlSources || {};
+    setIslandYamlSources(data.islandYamlSources || {});
   }, [loadExtensionsAndIndex, loadIslands]);
 
   // ── Startup: discover, parse schemas, load files, build index, validate ──
@@ -462,6 +470,8 @@ export default function App() {
       // stay out of allFileContentsRef / the FK index / the validation worker —
       // their content enters memory only when opened.
       await loadIslands(data.islands);
+      islandYamlSourcesRef.current = data.islandYamlSources || {};
+      setIslandYamlSources(data.islandYamlSources || {});
 
       // Load ALL XML file contents for FK index + validation
       const bulk = {};
@@ -1244,6 +1254,14 @@ export default function App() {
     fkIndexLatest.current = next;
     setFkIndex(next);
     return next;
+  }, []);
+
+  // ── Live cross-YAML FK values (a referenced source file changed on disk) ──
+  useEffect(() => {
+    window.arcenApi.onIslandYamlSourcesChanged?.((map) => {
+      islandYamlSourcesRef.current = map || {};
+      setIslandYamlSources(map || {});
+    });
   }, []);
 
   // ── File watcher (registered once, uses refs for latest state) ──
@@ -2994,10 +3012,13 @@ export default function App() {
     if (!schema) return; // not an island file
     const content = fileContents[activeFile];
     if (content === undefined) return;
+    // Resolved cross-YAML FK values for THIS file (yaml-list/yaml-dropdown
+    // validation looks these up by yaml_source id).
+    const yamlSources = islandYamlSources[activeFile] || null;
     const timer = setTimeout(() => {
       let errs = [];
       try {
-        errs = validateXMLFile(content, activeFile, schema, {}, lookupSwapsRef.current, { layer: 'base', folderName: '' });
+        errs = validateXMLFile(content, activeFile, schema, {}, lookupSwapsRef.current, { layer: 'base', folderName: '', yamlSources });
       } catch (_) { /* non-fatal */ }
       setValidationErrors((prev) => {
         const sig = (arr) => arr.map((e) => e.line + '|' + e.severity + '|' + e.message).sort().join('\n');
@@ -3010,7 +3031,7 @@ export default function App() {
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [fileContents, activeTabIndex, tabs, islandSchemaByRelPath]);
+  }, [fileContents, activeTabIndex, tabs, islandSchemaByRelPath, islandYamlSources]);
 
   // ── Periodic background revalidation (every 30s after any save) ──
   const lastValidationTime = useRef(Date.now());
@@ -3632,6 +3653,7 @@ export default function App() {
               schema={activeSchema}
               sharedSchema={sharedSchema}
               composedMergedSchema={composedSchemaForActive}
+              yamlSources={islandYamlSources[activeTab.relativePath] || null}
               isSchema={activeTab.type === 'schema'}
               onChange={updateContent}
               theme={theme}

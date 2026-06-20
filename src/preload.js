@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld('arcenApi', {
   onFileRemovedOnDisk: (callback) => {
     ipcRenderer.on('file-removed-on-disk', (_event, path) => callback(path));
   },
+  // Island cross-YAML FK values re-resolved (a referenced source file changed).
+  onIslandYamlSourcesChanged: (callback) => {
+    ipcRenderer.on('island-yaml-sources-changed', (_event, map) => callback(map));
+  },
 
   // Validation window communication
   sendValidationResults: (results) => {

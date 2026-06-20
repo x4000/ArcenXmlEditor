@@ -523,6 +523,9 @@ let islandEmbeddedAbsPaths = new Set();
 // layer dirs, so they need to be added explicitly.
 let islandFolderDirs = [];
 let islandTrackedAbsPaths = new Set();
+// Folders referenced by island <yaml_source> declarations (e.g. Archetypes/),
+// watched so external edits to the linked YAML refresh dropdowns/validation.
+let islandReferencedFolderDirs = [];
 let lastValidatorBounds = null;
 let lastHelpBounds = null;
 
@@ -1373,10 +1376,166 @@ function readMetadataRootAttrs(absPath) {
   // root element (which carries node_name / is_from_yaml_extension).
   text = text.replace(/<!--[\s\S]*?-->/g, '');
   const m = text.match(/<root\b([^>]*)>/);
-  if (!m) return { nodeName: '', embedExtension: null };
+  if (!m) return { nodeName: '', embedExtension: null, yamlSources: [] };
   const nn = m[1].match(/\bnode_name\s*=\s*"([^"]*)"/);
   const ye = m[1].match(/\bis_from_yaml_extension\s*=\s*"([^"]*)"/);
-  return { nodeName: nn ? nn[1] : '', embedExtension: (ye && ye[1]) ? ye[1] : null };
+  return {
+    nodeName: nn ? nn[1] : '',
+    embedExtension: (ye && ye[1]) ? ye[1] : null,
+    yamlSources: parseYamlSourcesFromMetadataText(text),
+  };
+}
+
+// Parse <yaml_source> / <extract> declarations from a (comment-stripped)
+// metadata text — main has no DOM parser, and the metadata is controlled XML.
+function parseYamlSourcesFromMetadataText(text) {
+  const out = [];
+  const attrOf = (s, name) => { const a = s.match(new RegExp(name + '\\s*=\\s*"([^"]*)"')); return a ? a[1] : ''; };
+  const blockRe = /<yaml_source\b([^>]*)>([\s\S]*?)<\/yaml_source>/g;
+  let m;
+  while ((m = blockRe.exec(text)) !== null) {
+    const extracts = [];
+    const exRe = /<extract\b([^>]*?)\/?>/g;
+    let e;
+    while ((e = exRe.exec(m[2])) !== null) {
+      extracts.push({ pattern: attrOf(e[1], 'pattern'), field: attrOf(e[1], 'field'), nameKey: attrOf(e[1], 'name_key') || null });
+    }
+    out.push({ id: attrOf(m[1], 'id'), folder: attrOf(m[1], 'folder'), linkGuidField: attrOf(m[1], 'link_guid_field'), extracts });
+  }
+  return out;
+}
+
+// ─── External-YAML FK pattern library + resolution ───────────────────
+//
+// A `<yaml_source>` declares a cross-file reference: follow a Unity GUID link
+// from THIS island file's outer YAML into a sibling folder, then pull value
+// lists out of the linked YAML via named patterns. The union of a source's
+// extracts is the valid-value set for fields that name it (yaml-list /
+// yaml-dropdown). Resolution lives here because main reads the YAML files; the
+// renderer consumes the resolved values for dropdowns + validation.
+
+function _yamlEscapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Pattern `scalar_list`: the `- value` items of the YAML block list under `field:`.
+function yamlExtractScalarList(text, field) {
+  const lines = String(text).split(/\r\n?|\n/);
+  const out = [];
+  let inList = false, keyIndent = -1;
+  const keyRe = new RegExp('^(\\s*)' + _yamlEscapeRe(field) + ':\\s*$');
+  for (const line of lines) {
+    if (!inList) { const m = line.match(keyRe); if (m) { inList = true; keyIndent = m[1].length; } continue; }
+    if (line.trim() === '') continue;
+    const indent = (line.match(/^(\s*)/) || ['', ''])[1].length;
+    const item = line.match(/^\s*-\s+(.+?)\s*$/);
+    if (item && indent >= keyIndent) { out.push(item[1]); continue; }
+    if (indent <= keyIndent) break;
+  }
+  return out;
+}
+
+// Pattern `object_name_list`: the `<nameKey>:` value of each `- ` object under `field:`.
+function yamlExtractObjectNameList(text, field, nameKey) {
+  const lines = String(text).split(/\r\n?|\n/);
+  const out = [];
+  let inList = false, keyIndent = -1;
+  const keyRe = new RegExp('^(\\s*)' + _yamlEscapeRe(field) + ':\\s*$');
+  const nameRe = new RegExp('^\\s*(?:-\\s*)?' + _yamlEscapeRe(nameKey || 'Name') + ':\\s*(.+?)\\s*$');
+  for (const line of lines) {
+    if (!inList) { const m = line.match(keyRe); if (m) { inList = true; keyIndent = m[1].length; } continue; }
+    if (line.trim() === '') continue;
+    const indent = (line.match(/^(\s*)/) || ['', ''])[1].length;
+    const isItem = /^\s*-\s/.test(line);
+    if (indent <= keyIndent && !isItem) break;
+    const nm = line.match(nameRe);
+    if (nm) out.push(nm[1]);
+  }
+  return out;
+}
+
+// Pattern `guid_link`: read `<field>: {... guid: G ...}` from `rawYaml`, then find
+// the file in `folderAbs` whose `.meta` sidecar declares guid G. Returns the
+// target asset's absolute path (the `.meta` minus its extension), or null.
+function yamlResolveGuidLink(rawYaml, field, folderAbs) {
+  const gm = rawYaml.match(new RegExp('(^|\\n)\\s*' + _yamlEscapeRe(field) + ':\\s*\\{[^}]*\\bguid:\\s*([0-9a-fA-F]+)'));
+  if (!gm) return null;
+  const guid = gm[2];
+  let entries;
+  try { entries = fs.readdirSync(folderAbs); } catch (_) { return null; }
+  const guidRe = new RegExp('(^|\\n)guid:\\s*' + guid + '\\b');
+  for (const f of entries) {
+    if (!f.endsWith('.meta')) continue;
+    let meta;
+    try { meta = fs.readFileSync(path.join(folderAbs, f), 'utf-8'); } catch (_) { continue; }
+    if (guidRe.test(meta)) return path.join(folderAbs, f.slice(0, -'.meta'.length));
+  }
+  return null;
+}
+
+// Resolve one <yaml_source> for one island data file → { id, ok, values,
+// targetRelPath, reason }. `folder` is resolved relative to the island folder's
+// parent (sibling folders under the same __Data root).
+function resolveYamlSourceForFile(islandFileAbs, islandFolderPath, src) {
+  const result = { id: src.id, ok: false, values: [], targetRelPath: null, reason: null };
+  let rawYaml;
+  try { rawYaml = fs.readFileSync(islandFileAbs, 'utf-8'); }
+  catch (_) { result.reason = 'island-unreadable'; return result; }
+  const folderAbs = path.join(path.dirname(islandFolderPath), src.folder);
+  const targetAbs = yamlResolveGuidLink(rawYaml, src.linkGuidField, folderAbs);
+  if (!targetAbs) { result.reason = 'link-unresolved'; return result; }
+  let targetText;
+  try { targetText = fs.readFileSync(targetAbs, 'utf-8'); }
+  catch (_) { result.reason = 'target-unreadable'; return result; }
+  const seen = new Set();
+  for (const ex of (src.extracts || [])) {
+    let vals = [];
+    if (ex.pattern === 'scalar_list') vals = yamlExtractScalarList(targetText, ex.field);
+    else if (ex.pattern === 'object_name_list') vals = yamlExtractObjectNameList(targetText, ex.field, ex.nameKey);
+    for (const v of vals) if (!seen.has(v)) { seen.add(v); result.values.push(v); }
+  }
+  result.ok = true;
+  result.targetRelPath = relFromRoot(targetAbs);
+  return result;
+}
+
+// Resolve every island's yaml_sources for every island data file. Returns
+//   { map: { [islandFileRelPath]: { [sourceId]: result } },
+//     referencedFolders: [absDir, ...] }   // for the file watcher to cover.
+function resolveAllIslandYamlSources(islands) {
+  const map = {};
+  const referenced = new Set();
+  for (const isl of (islands || [])) {
+    if (!isl.yamlSources || !isl.yamlSources.length) continue;
+    for (const src of isl.yamlSources) {
+      referenced.add(path.resolve(path.join(path.dirname(isl.folderPath), src.folder)));
+    }
+    for (const f of isl.files) {
+      const perSource = {};
+      for (const src of isl.yamlSources) perSource[src.id] = resolveYamlSourceForFile(f.path, isl.folderPath, src);
+      map[f.relativePath] = perSource;
+    }
+  }
+  return { map, referencedFolders: [...referenced] };
+}
+
+// Re-resolve all island yaml_sources and push the fresh values to the renderer.
+// Called when a file under a referenced folder (e.g. Archetypes/) changes, so
+// dropdowns + validation update live without a re-discovery.
+function refreshIslandYamlSources() {
+  if (!mainWindow) return;
+  const { islands } = discoverExtraDataSources();
+  const { map, referencedFolders } = resolveAllIslandYamlSources(islands);
+  islandReferencedFolderDirs = referencedFolders;
+  broadcastToAll('island-yaml-sources-changed', map);
+}
+
+// Is `filePath` inside a folder referenced by an island yaml_source?
+function isUnderIslandReferencedFolder(filePath) {
+  const abs = path.resolve(filePath);
+  for (const dir of islandReferencedFolderDirs) {
+    const d = path.resolve(dir);
+    if (abs === d || abs.startsWith(d + path.sep)) return true;
+  }
+  return false;
 }
 
 // Discover island data sources. Returns { islands, errors }; errors are raw
@@ -1443,6 +1602,7 @@ function discoverExtraDataSources() {
         metadataPath,
         metadataRelPath: relFromRoot(metadataPath),
         embedExtension: embedExtension || null,
+        yamlSources: rootAttrs.yamlSources || [],
         files: dataFiles,
       });
     }
@@ -1592,7 +1752,8 @@ function discoverDataFolders() {
     islandEmbeddedAbsPaths = new Set();
     islandFolderDirs = [];
     islandTrackedAbsPaths = new Set();
-    return { mode: 'narrow', folders: [], sharedMetadataPath: null, expansions: [], structuralErrors: [], islands: [] };
+    islandReferencedFolderDirs = [];
+    return { mode: 'narrow', folders: [], sharedMetadataPath: null, expansions: [], structuralErrors: [], islands: [], islandYamlSources: {} };
   }
 
   // SharedMetaData.metadata is always at the base directory's root.
@@ -1818,6 +1979,10 @@ function discoverDataFolders() {
       islandTrackedAbsPaths.add(path.resolve(f.path));
     }
   }
+  // Resolve external-YAML FK sources (cross-file refs via GUID links) for every
+  // island data file, and record the referenced folders to watch.
+  const { map: islandYamlSources, referencedFolders } = resolveAllIslandYamlSources(islands);
+  islandReferencedFolderDirs = referencedFolders;
 
   return {
     mode: currentLayout.mode,
@@ -1832,6 +1997,7 @@ function discoverDataFolders() {
     schemaExtensions,
     structuralErrors,
     islands,
+    islandYamlSources,
   };
 }
 
@@ -1845,6 +2011,7 @@ ipcMain.handle('discover-data', () => {
   // on first focus). Safe to call repeatedly — chokidar de-dupes added paths.
   try {
     if (watcher && islandFolderDirs.length) watcher.add(islandFolderDirs);
+    if (watcher && islandReferencedFolderDirs.length) watcher.add(islandReferencedFolderDirs);
   } catch (_) {}
   for (const abs of islandTrackedAbsPaths) {
     try { fileMtimes.set(relFwd(abs), fs.statSync(abs).mtimeMs); } catch (_) {}
@@ -2979,6 +3146,15 @@ function startFileWatcher() {
       return;
     }
 
+    // A file under a folder referenced by an island yaml_source (e.g.
+    // Archetypes/Humanoid.asset, or its .meta) changed → re-resolve the
+    // cross-YAML FK values and push them to the renderer (live dropdowns +
+    // validation). These files aren't open editor tabs, so no reload broadcast.
+    if (isUnderIslandReferencedFolder(filePath)) {
+      refreshIslandYamlSources();
+      return;
+    }
+
     // Island files (e.g. Unity .asset) live outside the data root and use
     // non-.xml extensions, but must still trigger a reload (e.g. when Unity
     // rewrites the file). Allow them through alongside .xml / .metadata.
@@ -3000,6 +3176,12 @@ function startFileWatcher() {
       broadcastToAll('dictionary-changed');
       return;
     }
+    // A new file appeared under an island-referenced folder (e.g. a new
+    // archetype) → re-resolve cross-YAML FK values.
+    if (isUnderIslandReferencedFolder(filePath)) {
+      refreshIslandYamlSources();
+      return;
+    }
     const relativePath = relFwd(filePath);
     broadcastToAll('file-added-on-disk', relativePath);
 
@@ -3018,6 +3200,10 @@ function startFileWatcher() {
   });
 
   watcher.on('unlink', (filePath) => {
+    if (isUnderIslandReferencedFolder(filePath)) {
+      refreshIslandYamlSources();
+      return;
+    }
     const relativePath = relFwd(filePath);
     broadcastToAll('file-removed-on-disk', relativePath);
     sourceControl.refreshFile(filePath);

@@ -38,7 +38,7 @@ import { getFKOptionsForLayer, getFKSubOptionsForLayer } from './fkIndex';
  * (resolved). Null for base/DLC files. Optional — defaults to null when
  * the caller doesn't supply it.
  */
-export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLayer, getFileExtraLayers) {
+export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLayer, getFileExtraLayers, getYamlSources) {
   let hoverTimer = null;
   let lastHoverPos = -1;
   let fkClickTimer = null;
@@ -138,6 +138,54 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
               if (sel.from !== sel.to) return;
               const idx = buildLocalKeyIndex(tokenize(view.state.doc.toString()), schema);
               const options = localKeyValuesInScope(idx, attrCopy.ns2, srcType).sort(naturalCompare);
+              callbacks.openDropdown(view, attrCopy, options, cx, cy);
+            }, 250);
+            return false;
+          }
+
+          // External-YAML FK list (e.g. archetype slots) — multi-select picker
+          // of the resolved value set, plus any node_extra_allowed (e.g. "all").
+          if (attr.tp === 'yaml-list' && attr.d?.yaml_source && callbacks.openMultiSelect) {
+            if (event.detail >= 2) return false;
+            if (fkClickTimer) clearTimeout(fkClickTimer);
+            const cx = event.clientX, cy = event.clientY;
+            const attrCopy = { ...attr };
+            const srcId = attr.d.yaml_source;
+            const extra = attr.d?.node_extra_allowed;
+            fkClickTimer = setTimeout(() => {
+              fkClickTimer = null;
+              const sel = view.state.selection.main;
+              if (sel.from !== sel.to) return;
+              const src = getYamlSources ? (getYamlSources() || {})[srcId] : null;
+              let options = (src && src.ok && Array.isArray(src.values)) ? src.values.slice() : [];
+              if (extra) {
+                const extraList = extra.split(',').map((s) => s.trim()).filter(Boolean);
+                options = [...extraList, ...options.filter((o) => !extraList.includes(o))];
+              }
+              const currentValues = attrCopy.v ? attrCopy.v.split(',').filter(Boolean) : [];
+              callbacks.openMultiSelect(view, attrCopy, options, currentValues, cx, cy);
+            }, 250);
+            return false;
+          }
+
+          // External-YAML FK single value — dropdown of the resolved value set.
+          if (attr.tp === 'yaml-dropdown' && attr.d?.yaml_source && callbacks.openDropdown) {
+            if (event.detail >= 2) return false;
+            if (fkClickTimer) clearTimeout(fkClickTimer);
+            const cx = event.clientX, cy = event.clientY;
+            const attrCopy = { ...attr };
+            const srcId = attr.d.yaml_source;
+            const extra = attr.d?.node_extra_allowed;
+            fkClickTimer = setTimeout(() => {
+              fkClickTimer = null;
+              const sel = view.state.selection.main;
+              if (sel.from !== sel.to) return;
+              const src = getYamlSources ? (getYamlSources() || {})[srcId] : null;
+              let options = (src && src.ok && Array.isArray(src.values)) ? src.values.slice() : [];
+              if (extra) {
+                const extraList = extra.split(',').map((s) => s.trim()).filter(Boolean);
+                options = [...extraList, ...options.filter((o) => !extraList.includes(o))];
+              }
               callbacks.openDropdown(view, attrCopy, options, cx, cy);
             }, 250);
             return false;
