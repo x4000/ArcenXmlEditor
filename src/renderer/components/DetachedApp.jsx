@@ -54,6 +54,13 @@ export default function DetachedApp({ windowId }) {
   // App.jsx — see [[detached-window-parity]].
   const [islandSchemaByRelPath, setIslandSchemaByRelPath] = useState(() => new Map());
   const islandRelPathsRef = useRef(new Set()); // island data files → view-only save guard
+  // Resolved external-YAML FK values (cross-file refs via GUID links), keyed by
+  // island data-file relPath then yaml_source id. Feeds the yaml-list/-dropdown
+  // pickers so detached island tabs behave identically to the main window.
+  // Re-pushed by main via onIslandYamlSourcesChanged when a referenced file
+  // changes. Mirrors App.jsx — see [[detached-window-parity]].
+  const [islandYamlSources, setIslandYamlSources] = useState({});
+  const islandYamlSourcesRef = useRef({});
   const sharedSchemaRef = useRef(null);
   const fkIndexRef = useRef({});
   const lookupSwapsRef = useRef({});
@@ -182,6 +189,11 @@ export default function DetachedApp({ windowId }) {
         islandRelPathsRef.current = relSet;
         setIslandSchemaByRelPath(islandMap);
       }
+
+      // Resolved cross-YAML FK values for the island pickers (same payload the
+      // main window gets from discover-data).
+      islandYamlSourcesRef.current = data.islandYamlSources || {};
+      setIslandYamlSources(data.islandYamlSources || {});
 
       const bulk = {};
       for (const folder of data.folders) {
@@ -441,6 +453,14 @@ export default function DetachedApp({ windowId }) {
           setSavedContents(prev => ({ ...prev, [relPath]: content }));
         }
       });
+    });
+
+    // Live cross-YAML FK values: a referenced source file (e.g. an archetype
+    // YAML) changed on disk and main re-resolved. Keep the detached pickers in
+    // sync exactly like the main window.
+    window.arcenApi.onIslandYamlSourcesChanged?.((map) => {
+      islandYamlSourcesRef.current = map || {};
+      setIslandYamlSources(map || {});
     });
   }, []);
 
@@ -1044,6 +1064,7 @@ export default function DetachedApp({ windowId }) {
                 schema={activeSchema}
                 sharedSchema={sharedSchemaRef.current}
                 composedMergedSchema={composedMergedSchema}
+                yamlSources={islandYamlSources[activeTab.relativePath] || null}
                 isSchema={activeTab.type === 'schema'}
                 onChange={updateContent}
                 theme={theme}
