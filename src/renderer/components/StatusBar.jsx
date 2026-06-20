@@ -1,11 +1,18 @@
 import React from 'react';
 import PluginsChip from './PluginsChip';
 
-export default function StatusBar({ theme, onToggleTheme, sidebarSide, onToggleSidebarSide, validationErrors, activeFile, onRevalidate, onChangeDataRoot, validationTimerDisplay, validationRunning }) {
-  const errorCount = validationErrors.filter((e) => e.severity === 'error').length;
-  const warnCount = validationErrors.filter((e) => e.severity === 'warning' && !e.message.startsWith('Spelling:') && !e.message.startsWith('Grammar (')).length;
-  const spellingCount = validationErrors.filter((e) => e.message.startsWith('Spelling:')).length;
-  const grammarCount = validationErrors.filter((e) => e.message.startsWith('Grammar (')).length;
+export default function StatusBar({ theme, onToggleTheme, sidebarSide, onToggleSidebarSide, validationErrors, globalErrors, activeFile, onRevalidate, onChangeDataRoot, validationTimerDisplay, validationRunning }) {
+  // The red/warn state + counts reflect the GLOBAL merged set (this window's
+  // errors PLUS any from other windows), so the footer goes red for problems a
+  // detached window introduced too. `validationErrors` (this window's own set)
+  // is still what we re-ship on click, so we never pollute the main process's
+  // per-window partition with another window's entries. Falls back to the local
+  // set until the first merged push arrives.
+  const displayErrors = globalErrors ?? validationErrors;
+  const errorCount = displayErrors.filter((e) => e.severity === 'error').length;
+  const warnCount = displayErrors.filter((e) => e.severity === 'warning' && !e.message.startsWith('Spelling:') && !e.message.startsWith('Grammar (')).length;
+  const spellingCount = displayErrors.filter((e) => e.message.startsWith('Spelling:')).length;
+  const grammarCount = displayErrors.filter((e) => e.message.startsWith('Grammar (')).length;
 
   const hasIssues = errorCount > 0 || warnCount > 0 || spellingCount > 0 || grammarCount > 0;
   const statusClass = errorCount > 0

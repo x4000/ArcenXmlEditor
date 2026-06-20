@@ -63,6 +63,11 @@ contextBridge.exposeInMainWorld('arcenApi', {
   sendValidationResults: (results) => {
     ipcRenderer.send('validation-results', results);
   },
+  // A detached window's live validation for the single file it is editing.
+  // file=null clears this window's contribution.
+  sendDetachedValidation: (file, results) => {
+    ipcRenderer.send('detached-validation', file, results);
+  },
   getValidationResults: () => ipcRenderer.invoke('get-validation-results'),
   onValidationResults: (callback) => {
     ipcRenderer.on('validation-results', (_event, results) =>

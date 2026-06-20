@@ -565,6 +565,63 @@ let detachedCounter = 0;
 // always clobber the detached file the user was actually editing.
 let lastActiveFileGlobal = null;
 
+// ─── Validation result aggregation across windows ───────────────────
+// The MAIN window owns the project-wide set (worker core/FK + spelling/grammar
+// + its own live tabs), stored in `mainValidationResults`. Each DETACHED window
+// contributes LIVE core/FK results for the ONE file it is editing, declared
+// explicitly as { file, results } in `detachedValidationByWindow` — which
+// override the main window's now-stale entries for that file (the detached
+// buffer holds the authoritative live edit). rebuildAndRelayValidation() merges
+// them and pushes the union to the validation window AND back to every detached
+// window (so their StatusBar shows the same project-wide count as main).
+// With no detached windows the merge is the main window's set verbatim, so
+// behavior is byte-identical to before.
+let mainValidationResults = [];
+const detachedValidationByWindow = new Map(); // windowId → { file, results: [] }
+let lastValidationResults = []; // last merged snapshot (seeds the validator window on load)
+
+function rebuildAndRelayValidation() {
+  // file → detached windowId that owns its live core/FK validation. Driven by
+  // the detached window's EXPLICIT declared file, so a detached window sitting
+  // on a schema/non-data tab (which declares file=null) never suppresses the
+  // main window's results, and tab switches don't flicker (a file keeps the
+  // detached results until the next file's results actually arrive).
+  const overrideByFile = new Map();
+  for (const [id, payload] of detachedValidationByWindow) {
+    if (payload && payload.file) overrideByFile.set(payload.file, id);
+  }
+  const merged = [];
+  for (const r of mainValidationResults) {
+    const msg = typeof r.message === 'string' ? r.message : '';
+    const isSpellGrammar = msg.startsWith('Spelling:') || msg.startsWith('Grammar (');
+    // Drop the main window's stale core/FK entries for files a detached window
+    // is editing live; keep spelling/grammar (detached doesn't produce those,
+    // and the main window still tracks them from the file's last-known content).
+    if (overrideByFile.has(r.file) && !isSpellGrammar) continue;
+    merged.push(r);
+  }
+  for (const payload of detachedValidationByWindow.values()) {
+    if (!payload || !payload.file) continue;
+    for (const r of (payload.results || [])) {
+      if (r.file === payload.file) merged.push(r);
+    }
+  }
+  lastValidationResults = merged;
+  if (validationWindow && !validationWindow.isDestroyed()) {
+    validationWindow.webContents.send('validation-results', merged);
+  }
+  // Footer/StatusBar parity: EVERY window — main included — gets the merged set
+  // so its footer reflects errors that any OTHER window introduced (e.g. the
+  // main footer goes red for a bad FK a detached window is editing). The main
+  // window consumes this ONLY to drive its footer display state; it never
+  // re-sends in response, so there's no feedback loop.
+  for (const [id, entry] of windowRegistry) {
+    if (entry.browserWindow && !entry.browserWindow.isDestroyed()) {
+      entry.browserWindow.webContents.send('validation-results', merged);
+    }
+  }
+}
+
 // ─── Central File State Registry ────────────────────────────────────
 // relativePath → { cursor, scrollLine, refPanel: { open, height, scrollLine } | null }
 const fileStateRegistry = new Map();
@@ -704,6 +761,10 @@ function createDetachedWindow(windowId, tabPaths, x, y, width, height) {
     const entry = windowRegistry.get(windowId);
     if (!entry || entry.browserWindow === win) {
       windowRegistry.delete(windowId);
+      // Drop this window's validation contribution and re-merge so its file
+      // reverts to the main window's (now-authoritative) results.
+      detachedValidationByWindow.delete(windowId);
+      rebuildAndRelayValidation();
       // Re-rank the remaining detached windows so their titles count
       // 1..N with no gaps.
       renumberDetachedWindows();
@@ -2522,13 +2583,23 @@ ipcMain.handle('open-help-window', () => {
   createHelpWindow();
 });
 
-// Relay validation-results from main window to validation window
-let lastValidationResults = [];
-ipcMain.on('validation-results', (_event, results) => {
-  lastValidationResults = results || [];
-  if (validationWindow && !validationWindow.isDestroyed()) {
-    validationWindow.webContents.send('validation-results', lastValidationResults);
-  }
+// The MAIN window's project-wide validation set. (Detached windows use the
+// 'detached-validation' channel below; stray detached sends here are ignored.)
+ipcMain.on('validation-results', (event, results) => {
+  const id = getWindowIdForWebContents(event.sender);
+  if (id && id !== 'main') return;
+  mainValidationResults = results || [];
+  rebuildAndRelayValidation();
+});
+
+// A detached window's LIVE results for the single file it is editing, declared
+// explicitly. file=null clears this window's override (e.g. it moved to a
+// schema/non-data tab), reverting that file to the main window's results.
+ipcMain.on('detached-validation', (event, file, results) => {
+  const id = getWindowIdForWebContents(event.sender);
+  if (!id || id === 'main') return;
+  detachedValidationByWindow.set(id, { file: file || null, results: results || [] });
+  rebuildAndRelayValidation();
 });
 
 // Validation window requests current results on load

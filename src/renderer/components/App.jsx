@@ -158,6 +158,13 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('files');
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [validationErrors, setValidationErrors] = useState([]);
+  // Merged project-wide validation set (this window's errors PLUS every detached
+  // window's), pushed by the main process. Drives ONLY the footer/StatusBar red
+  // state + counts, so the main footer reflects errors a detached window
+  // introduced. Kept distinct from `validationErrors` (this window's own working
+  // set, which feeds the worker/live-validation merge logic). Null until the
+  // first push (StatusBar falls back to the local set meanwhile).
+  const [globalValidationErrors, setGlobalValidationErrors] = useState(null);
   const [fkIndex, setFkIndex] = useState({});
   const [diffTabIndex, setDiffTabIndex] = useState(null);
   const [diskConflicts, setDiskConflicts] = useState([]); // [{relPath}]
@@ -186,6 +193,12 @@ export default function App() {
   const spellcheckerRef = useRef(null);
   const workerRef = useRef(null);
   const validationBusyRef = useRef(false);
+  // Latest postWorkerValidation (defined far below as a useCallback) mirrored to
+  // a ref so the empty-deps file-watcher effect can call the current version
+  // without capturing a stale closure. Debounce timer coalesces external-change
+  // bursts (VCS updates, a detached window saving) into one worker re-validate.
+  const postWorkerValidationRef = useRef(null);
+  const extChangeRevalTimerRef = useRef(null);
   // Snapshot of what was last shipped to the validator window. Used as the
   // source-of-truth comparison for the worker.onmessage "no-op if unchanged"
   // optimization — comparing against React state (which can be updated by
@@ -1264,6 +1277,16 @@ export default function App() {
     });
   }, []);
 
+  // ── Global (merged-across-windows) validation set for the footer ──
+  // The main process pushes the merged set to every window. We use it ONLY for
+  // the StatusBar's red/count display (so the footer reflects a detached
+  // window's errors); it never feeds back into our own validation pipeline.
+  useEffect(() => {
+    window.arcenApi.onValidationResults?.((merged) => {
+      setGlobalValidationErrors(Array.isArray(merged) ? merged : []);
+    });
+  }, []);
+
   // ── File watcher (registered once, uses refs for latest state) ──
   useEffect(() => {
     // Normalize Windows-style backslash separators to forward slashes so
@@ -1316,6 +1339,18 @@ export default function App() {
         // (.metadata files take the schema-reparse path below instead.)
         if (!relPath.endsWith('.metadata')) {
           foldXmlFileIntoFKIndex(relPath);
+          // Re-validate via the worker so an externally-changed file that ISN'T
+          // open in this window (e.g. saved by a detached window, or rewritten
+          // by Unity/VCS) gets its FK/core errors caught here too. Without this
+          // the worker only re-runs on a LOCAL save or the 30s post-save tick,
+          // so the main window's footer + validator would stay stale — and a
+          // real on-disk error would vanish if the detached window that found it
+          // closed. Debounced to coalesce multi-file bursts.
+          if (extChangeRevalTimerRef.current) clearTimeout(extChangeRevalTimerRef.current);
+          extChangeRevalTimerRef.current = setTimeout(() => {
+            extChangeRevalTimerRef.current = null;
+            postWorkerValidationRef.current?.();
+          }, 500);
         }
 
         // Force the live-rescan effect to schedule a fresh scan after this disk
@@ -2100,6 +2135,8 @@ export default function App() {
   const postWorkerValidation = useCallback(() => {
     postValidateToWorker({ full: false });
   }, [postValidateToWorker]);
+  // Keep the ref the file-watcher reads pointing at the current callback.
+  postWorkerValidationRef.current = postWorkerValidation;
 
   // ── Re-validate all (for button/window) — debounced and non-blocking ──
   const validateGenRef = useRef(0);
@@ -3238,6 +3275,52 @@ export default function App() {
     );
   }, [activeTab, activeSchema, sharedSchema, schemaExtensions, layerMaps, layerByRelPath, islandSchemaByRelPath]);
 
+  // ── Live validation for the active NORMAL data file ──
+  // The validation worker only re-runs on save, manual re-validate, or the 30s
+  // post-save tick (gated on a save having happened) — so WITHOUT this, FK and
+  // other core errors in the file you're actively editing don't surface until
+  // you save. Mirror the island effect: validate the active tab live (debounced)
+  // against its composed schema + the current FK index, replacing just this
+  // file's core entries (spelling/grammar preserved). Islands are covered by the
+  // effect above; the worker still owns every OTHER file and re-validates this
+  // one identically when it next ticks, so there's no lasting duplication.
+  useEffect(() => {
+    if (!activeTab || activeTab.type === 'schema') return;
+    const activeFile = activeTab.relativePath;
+    if (islandSchemaByRelPath.get(activeFile)) return; // islands handled above
+    const schema = composedSchemaForActive;
+    if (!schema || schema.neverValidate) return;
+    const content = fileContents[activeFile];
+    if (content === undefined) return;
+    const timer = setTimeout(() => {
+      let errs = [];
+      try {
+        const layer = layerByRelPath.get(activeFile)?.layer || 'base';
+        const lm = layerMapsLatest.current;
+        errs = validateXMLFile(content, activeFile, schema, fkIndexLatest.current, lookupSwapsRef.current, {
+          layer,
+          folderName: folderNameOf(activeFile),
+          expansionDirNameToLayer: lm.expansionDirNameToLayer,
+          modFolderNameToLayer: lm.modFolderNameToLayer,
+          modDisplayByLayer: lm.modDisplayByLayer,
+          fileModExtras: lm.modExtrasByLayer[layer] || null,
+        });
+      } catch (_) { /* non-fatal — never let validation crash the editor */ }
+      setValidationErrors((prev) => {
+        const isSpellGrammar = (e) => e.message.startsWith('Spelling:') || e.message.startsWith('Grammar (');
+        const sig = (arr) => arr.map((e) => e.line + '|' + e.severity + '|' + e.message).sort().join('\n');
+        const minePrev = prev.filter((e) => e.file === activeFile && !isSpellGrammar(e));
+        if (sig(minePrev) === sig(errs)) return prev; // unchanged → no-op
+        const other = prev.filter((e) => !(e.file === activeFile && !isSpellGrammar(e)));
+        const combined = [...other, ...errs];
+        window.arcenApi.sendValidationResults(combined);
+        lastSentValidatorRef.current = combined;
+        return combined;
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [fileContents, activeTab, composedSchemaForActive, islandSchemaByRelPath, layerByRelPath]);
+
   // ── Ctrl+click attribute name → navigate to metadata file ──
   //
   // Resolution order — pick the FIRST file that actually contains the
@@ -3820,6 +3903,7 @@ export default function App() {
           sidebarSide={sidebarSide}
           onToggleSidebarSide={() => setSidebarSide(s => s === 'left' ? 'right' : 'left')}
           validationErrors={validationErrors}
+          globalErrors={globalValidationErrors}
           activeFile={activeTab?.relativePath}
           onRevalidate={revalidateAll}
           onChangeDataRoot={async (e) => {

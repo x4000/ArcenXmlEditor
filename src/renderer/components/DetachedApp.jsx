@@ -462,6 +462,14 @@ export default function DetachedApp({ windowId }) {
       islandYamlSourcesRef.current = map || {};
       setIslandYamlSources(map || {});
     });
+
+    // Merged project-wide validation results (main process broadcasts these to
+    // every detached window). Drives this window's StatusBar error count so it
+    // matches the main window exactly. This window also CONTRIBUTES results for
+    // its active tab via sendValidationResults (see the live-validation effect).
+    window.arcenApi.onValidationResults?.((results) => {
+      setValidationErrors(Array.isArray(results) ? results : []);
+    });
   }, []);
 
   function syncTabs() {
@@ -790,6 +798,52 @@ export default function DetachedApp({ windowId }) {
     const layer = layerByRelPath.get(activeTab.relativePath)?.layer || 'base';
     return composeSchemaForFileLayer(merged, schemaExtensions, layerMapsRef.current.modExtrasByLayer, layer, folderName);
   }, [activeTab, activeSchema, schemaExtensions, layerByRelPath, islandSchemaByRelPath]);
+
+  // ── Live validation for the active tab (full parity with the main window) ──
+  // A detached window is a real editor, so the file the user is editing here
+  // must validate live just like in the main window — core + regular FK for
+  // normal data files, core + cross-YAML FK + local refs for island files.
+  // Results are sent (with the file declared explicitly) to the main process,
+  // which merges them OVER its own now-stale entries for this file and relays
+  // to the validation window. We cover ONLY the active file; the main window's
+  // worker still covers every other file (including this window's other tabs)
+  // plus spelling/grammar. A non-validatable active tab (none / schema / no
+  // content / no schema) sends file=null to clear this window's contribution so
+  // it never suppresses the main window's results for that file.
+  useEffect(() => {
+    const activeFile = activeTab?.relativePath;
+    const content = activeFile ? fileContents[activeFile] : undefined;
+    const schema = composedMergedSchema;
+    if (!activeFile || activeTab.type === 'schema' || content === undefined || !schema) {
+      window.arcenApi.sendDetachedValidation?.(null, []);
+      return;
+    }
+    const islandSchema = islandSchemaByRelPath.get(activeFile);
+    const timer = setTimeout(() => {
+      let errs = [];
+      try {
+        if (islandSchema) {
+          // Island: standalone schema, empty FK index, cross-YAML FK values.
+          const yamlSources = islandYamlSources[activeFile] || null;
+          errs = validateXMLFile(content, activeFile, islandSchema, {}, lookupSwapsRef.current, { layer: 'base', folderName: '', yamlSources });
+        } else if (!schema.neverValidate) {
+          // Normal data file: project FK index + this file's mod layer context.
+          const layer = layerByRelPath.get(activeFile)?.layer || 'base';
+          const lm = layerMapsRef.current;
+          errs = validateXMLFile(content, activeFile, schema, fkIndexRef.current, lookupSwapsRef.current, {
+            layer,
+            folderName: folderNameOf(activeFile),
+            expansionDirNameToLayer: lm.expansionDirNameToLayer,
+            modFolderNameToLayer: lm.modFolderNameToLayer,
+            modDisplayByLayer: lm.modDisplayByLayer,
+            fileModExtras: lm.modExtrasByLayer[layer] || null,
+          });
+        }
+      } catch (_) { /* non-fatal — never let validation crash the editor */ }
+      window.arcenApi.sendDetachedValidation?.(activeFile, errs);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [fileContents, activeTab, composedMergedSchema, islandSchemaByRelPath, islandYamlSources]);
 
   // Ctrl+click navigation — same shared implementation the main window uses, so
   // detached windows are no longer dead-ended on these (they previously wired
