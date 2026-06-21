@@ -1784,16 +1784,44 @@ function decodeEmbeddedXml(rawYaml) {
   return unescapeYamlDoubleQuoted(unfoldYamlFlowScalar(scalar.raw));
 }
 
-// Escape inner XML for embedding in a YAML double-quoted scalar as a SINGLE line
-// (every newline becomes \n — no physical line folding, so the user's whitespace
-// is preserved exactly with no condensing). Order matters: backslash first.
-function escapeXmlForYamlScalar(xml) {
-  return xml
+// Escape ONE XML line (no embedded newline — folding handles those) for a YAML
+// double-quoted scalar. Order matters: backslash first.
+function escapeXmlLineForYaml(line) {
+  return line
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
     .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n')
     .replace(/\t/g, '\\t');
+}
+
+// Build the body of a YAML double-quoted scalar from inner XML, putting each XML
+// line on its OWN physical line so SVN/diff tools are useful (instead of one
+// giant line). This reproduces Unity's own line-folding dialect, so it
+// round-trips through BOTH AXE's decoder (unfoldYamlFlowScalar) AND a
+// spec-compliant YAML parser with NO decoder change:
+//   - A value newline is the escape `\n`. To physically break right after it we
+//     leave `\n` + (indent-1) trailing spaces on the current line, then a real
+//     newline + a wrap-indent. The parser folds that break back into the one
+//     missing space and strips the wrap-indent, exactly restoring `\n`+indent;
+//     AXE's decoder does the same (add a space, strip leading whitespace).
+//   - Zero-indent lines (<?xml?>, <root>, </root>) and all-blank lines have no
+//     leading space to fold on, so they stay inline — harmless and rare.
+// Verified byte-exact + idempotent against the real island file and js-yaml
+// (the SVN convert that flattened Unity's original multi-line form is what we
+// are effectively restoring). Physical breaks are LF; Unity .asset files are LF.
+function foldXmlIntoYamlScalar(xml, wrapIndent) {
+  const segs = xml.split('\n');
+  let body = escapeXmlLineForYaml(segs[0]);
+  for (let i = 1; i < segs.length; i++) {
+    const seg = segs[i];
+    const lead = (/^ +/.exec(seg) || [''])[0].length;
+    if (lead >= 1 && seg.trim() !== '') {
+      body += '\\n' + ' '.repeat(lead - 1) + '\n' + wrapIndent + escapeXmlLineForYaml(seg.slice(lead));
+    } else {
+      body += '\\n' + escapeXmlLineForYaml(seg);
+    }
+  }
+  return body;
 }
 
 // Re-encode edited inner XML back into a YAML island file's `xml:` scalar,
@@ -1802,7 +1830,12 @@ function escapeXmlForYamlScalar(xml) {
 function reencodeEmbeddedXml(rawYaml, innerXml) {
   const scalar = findYamlXmlScalar(rawYaml);
   if (!scalar) return null;
-  return rawYaml.slice(0, scalar.start) + escapeXmlForYamlScalar(innerXml) + rawYaml.slice(scalar.end);
+  // Continuation lines must be indented deeper than the `xml:` key to be a valid
+  // multi-line flow scalar; that wrap-indent is stripped on decode/parse.
+  const lineStart = rawYaml.lastIndexOf('\n', scalar.start) + 1;
+  const keyIndent = (/^[ \t]*/.exec(rawYaml.slice(lineStart)) || [''])[0];
+  const body = foldXmlIntoYamlScalar(innerXml, keyIndent + '  ');
+  return rawYaml.slice(0, scalar.start) + body + rawYaml.slice(scalar.end);
 }
 
 function discoverDataFolders() {
