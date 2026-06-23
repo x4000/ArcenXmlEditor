@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('arcenApi', {
   onFileRemovedOnDisk: (callback) => {
     ipcRenderer.on('file-removed-on-disk', (_event, path) => callback(path));
   },
+  // Mods/expansions added or removed on disk during the session — the renderer
+  // should re-pull discoverData() so the MODS tab + layer maps reflect them.
+  onLayersChanged: (callback) => {
+    ipcRenderer.on('layers-changed', () => callback());
+  },
   // Island cross-YAML FK values re-resolved (a referenced source file changed).
   onIslandYamlSourcesChanged: (callback) => {
     ipcRenderer.on('island-yaml-sources-changed', (_event, map) => callback(map));

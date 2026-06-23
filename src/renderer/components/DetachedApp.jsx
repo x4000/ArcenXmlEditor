@@ -430,6 +430,33 @@ export default function DetachedApp({ windowId }) {
     // state never accumulates two entries for the same file — see the
     // long comment on the matching effect in App.jsx.
     const norm = (p) => (typeof p === 'string' ? p.replace(/\\/g, '/') : p);
+    // Mods/expansions changed on disk (main re-scanned the mod sources). Detached
+    // windows have no sidebar/MODS tab, but their cross-layer validation relies on
+    // the layer maps + folder lookups built from discoverData — refresh those so a
+    // newly-added mod's layer is recognized without a restart. See
+    // detached-window-parity.
+    window.arcenApi.onLayersChanged(async () => {
+      try {
+        const data = await window.arcenApi.discoverData();
+        foldersRef.current = data.folders;
+        const m = new Map();
+        const layerM = new Map();
+        for (const folder of data.folders) {
+          for (const xf of folder.xmlFiles) {
+            m.set(xf.relativePath, folder.name);
+            if (xf.layer && xf.layer !== 'base') {
+              layerM.set(xf.relativePath, { layer: xf.layer, layerNum: xf.layerNum });
+            }
+          }
+          if (folder.metadataRelPath) m.set(folder.metadataRelPath, folder.name);
+        }
+        folderNameByRelPathRef.current = m;
+        setLayerByRelPath(layerM);
+        layerMapsRef.current = buildLayerMaps(data.expansions, data.mods);
+      } catch (e) {
+        console.warn('[detached] layers-changed refresh failed:', e);
+      }
+    });
     window.arcenApi.onFileChangedOnDisk((rawRelPath) => {
       const relPath = norm(rawRelPath);
       if (recentSavesRef.current.has(relPath)) return;

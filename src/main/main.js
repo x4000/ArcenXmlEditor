@@ -835,6 +835,11 @@ function createMainWindow() {
   }
 
   mainWindow.on('focus', () => {
+    // Pick up mods/expansions added or removed while AXE was in the background
+    // (a workshop subscription Steam just downloaded, a folder dropped into
+    // XMLMods/). Cheap no-op when nothing changed; not gated by the post-save
+    // guard below since a recent save shouldn't suppress mod detection.
+    refreshLayoutIfChanged();
     // Don't check immediately after a save to avoid false positives
     if (Date.now() - lastSaveTime < 3000) return;
     checkForChangedFiles();
@@ -3314,6 +3319,54 @@ function startFileWatcher() {
   });
 }
 
+// Re-scan the mod / expansion source directories and, if the set (or any mod's
+// surfaced metadata) changed since `currentLayout` was built, swap in the fresh
+// layout so newly-added mods appear without an app restart.
+//
+// Why a poll instead of the file watcher: mod sources aren't in the watched
+// tree. Workshop content lives entirely outside DATA_ROOT, and the local
+// XMLMods/ (and XMLMods_NonDistributed/) parents sit ABOVE the per-mod
+// tableRoots we watch — so dropping in (or deleting) a whole mod folder fires
+// no watcher event. `currentLayout` is otherwise built only at startup and on
+// root switch. We re-derive it on main-window focus and on the periodic focused
+// tick (same cadence as the VCS refresh), so the common "nothing changed" case
+// costs a couple of directory reads plus, for workshop mods, the same registry
+// probe listActiveMods already does. Suite mode only — narrow mode has no
+// mod/expansion concept.
+function refreshLayoutIfChanged() {
+  if (!DATA_ROOT || !currentLayout || currentLayout.mode !== 'suite') return;
+  const next = detectLayout(DATA_ROOT);
+  if (!next || next.mode !== 'suite') return;
+  // Signature covers add/remove (layerId / dirName) plus the mod metadata the
+  // MODS tab renders, so editing a ModDetails display name / color / deps or
+  // flipping a mod's enabled state also refreshes — not just folder churn.
+  const modSig = (l) => (l.mods || []).map((m) => [
+    m.layerId, m.displayName, m.color, m.isFrameworkMod,
+    (m.requiredMods || []).join('|'), (m.requiredExpansions || []).join('|'),
+  ].join('\x01')).join('\x02');
+  const expSig = (l) => (l.expansions || []).map((e) => e.dirName).join('\x02');
+  if (modSig(next) === modSig(currentLayout) && expSig(next) === expSig(currentLayout)) return;
+
+  currentLayout = next;
+  // The watched layer set changed (a new mod dir to cover, or a removed one to
+  // drop) and the mtime baseline must include the new files so the next focus
+  // poll doesn't flag them all as "changed". Re-snapshot, then restart the
+  // watcher on the fresh layer dirs.
+  snapshotMtimes();
+  if (watcher) { watcher.close(); watcher = null; }
+  startFileWatcher();
+  // startFileWatcher only seeds the layer dirs; the island folders the
+  // discover-data handler layered on are dropped by the restart. Re-add them so
+  // external (Unity) edits keep firing, mirroring the discover-data handler.
+  try {
+    if (watcher && islandFolderDirs.length) watcher.add(islandFolderDirs);
+    if (watcher && islandReferencedFolderDirs.length) watcher.add(islandReferencedFolderDirs);
+  } catch (_) {}
+  // Tell every renderer to re-pull discoverData() so the MODS tab, layer maps,
+  // and cross-layer validation reflect the new set.
+  broadcastToAll('layers-changed');
+}
+
 // ─── App Lifecycle ───────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -3392,6 +3445,9 @@ app.whenReady().then(async () => {
     setInterval(() => {
       if (!BrowserWindow.getFocusedWindow()) return;
       runFullVcsRefresh();
+      // Same focused cadence catches a workshop download that finishes while
+      // AXE stays the active window (no focus event fires in that case).
+      refreshLayoutIfChanged();
     }, 30000);
 
     // On focus gain, run the full refresh immediately. `browser-window-focus`

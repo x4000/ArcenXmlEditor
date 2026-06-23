@@ -1502,6 +1502,10 @@ export default function App() {
       }, 150);
     };
     window.arcenApi.onFileAddedOnDisk(() => scheduleSidebarRefresh());
+    // A mod/expansion folder appeared or disappeared (main re-scanned the mod
+    // sources on focus). Re-discover so the MODS tab + layer set update without
+    // a restart — same debounced path as a file add.
+    window.arcenApi.onLayersChanged(() => scheduleSidebarRefresh());
     window.arcenApi.onFileRemovedOnDisk((relPath) => {
       // If an open tab's file was deleted on disk, the tab still exists
       // in state but any future read will fail. Don't auto-close — the
