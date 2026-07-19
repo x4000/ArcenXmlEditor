@@ -580,6 +580,30 @@ let mainValidationResults = [];
 const detachedValidationByWindow = new Map(); // windowId → { file, results: [] }
 let lastValidationResults = []; // last merged snapshot (seeds the validator window on load)
 
+// A spelling occurrence has one authoritative row. This also collapses stale
+// scan/live-rescan variants whose context text differs but whose file position
+// is identical. Non-spelling diagnostics are left untouched because two core
+// checks can legitimately produce the same message on one line.
+function dedupeSpellingResults(results) {
+  const seen = new Set();
+  const deduped = [];
+  for (const entry of (Array.isArray(results) ? results : [])) {
+    const message = typeof entry?.message === 'string' ? entry.message : '';
+    if (!message.startsWith('Spelling:')) {
+      deduped.push(entry);
+      continue;
+    }
+    const word = message.match(/^Spelling: "([^"]+)"/)?.[1] || '';
+    const pos = Number(entry.absPos);
+    const location = Number.isFinite(pos) ? `p${pos}` : `l${entry.line}|${message}`;
+    const key = `${entry.file}\0${location}\0${word}\0${entry.isDev ? 1 : 0}\0${entry.forbiddenChar ? 1 : 0}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
 function rebuildAndRelayValidation() {
   // file → detached windowId that owns its live core/FK validation. Driven by
   // the detached window's EXPLICIT declared file, so a detached window sitting
@@ -606,9 +630,9 @@ function rebuildAndRelayValidation() {
       if (r.file === payload.file) merged.push(r);
     }
   }
-  lastValidationResults = merged;
+  lastValidationResults = dedupeSpellingResults(merged);
   if (validationWindow && !validationWindow.isDestroyed()) {
-    validationWindow.webContents.send('validation-results', merged);
+    validationWindow.webContents.send('validation-results', lastValidationResults);
   }
   // Footer/StatusBar parity: EVERY window — main included — gets the merged set
   // so its footer reflects errors that any OTHER window introduced (e.g. the
@@ -617,7 +641,7 @@ function rebuildAndRelayValidation() {
   // re-sends in response, so there's no feedback loop.
   for (const [id, entry] of windowRegistry) {
     if (entry.browserWindow && !entry.browserWindow.isDestroyed()) {
-      entry.browserWindow.webContents.send('validation-results', merged);
+      entry.browserWindow.webContents.send('validation-results', lastValidationResults);
     }
   }
 }
@@ -2626,7 +2650,7 @@ ipcMain.handle('open-help-window', () => {
 ipcMain.on('validation-results', (event, results) => {
   const id = getWindowIdForWebContents(event.sender);
   if (id && id !== 'main') return;
-  mainValidationResults = results || [];
+  mainValidationResults = dedupeSpellingResults(results);
   rebuildAndRelayValidation();
 });
 
@@ -2643,6 +2667,41 @@ ipcMain.on('detached-validation', (event, file, results) => {
 // Validation window requests current results on load
 ipcMain.handle('get-validation-results', () => {
   return lastValidationResults;
+});
+
+// Write the merged, project-wide set shown by the validation window to a
+// predictable file at the overall data root. In suite mode this is DATA_ROOT,
+// not DATA_HOME (GameData/Configuration), so external tools can always find
+// the report at the top of the project the user opened.
+ipcMain.handle('export-validation-results', async () => {
+  if (!DATA_ROOT) throw new Error('No data root configured');
+
+  const results = lastValidationResults.filter((entry) =>
+    entry && (entry.severity === 'error' || entry.severity === 'warning')
+  );
+  if (results.length === 0) throw new Error('There are no errors or warnings to export');
+
+  const errorCount = results.filter((entry) => entry.severity === 'error').length;
+  const warningCount = results.length - errorCount;
+  const oneLine = (value) => String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+  const lines = [
+    'Arcen XML Editor - Errors and Warnings',
+    `Project: ${DATA_ROOT}`,
+    `Errors: ${errorCount}  Warnings: ${warningCount}`,
+    '',
+    ...results.map((entry) => {
+      const severity = entry.severity.toUpperCase();
+      const file = oneLine(entry.file) || '(project)';
+      const parsedLine = Number(entry.line);
+      const line = Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : 1;
+      return `${severity} [${file}:${line}] ${oneLine(entry.message)}`;
+    }),
+    '',
+  ];
+
+  const outputPath = path.join(DATA_ROOT, 'xmlErrorsWarnings.txt');
+  await fs.promises.writeFile(outputPath, lines.join('\n'), 'utf8');
+  return { outputPath, count: results.length, errorCount, warningCount };
 });
 
 // Suggestion bridge: validation window asks main, main asks main renderer,
@@ -2877,6 +2936,14 @@ ipcMain.handle('load-spelling-dictionary', () => {
   }
 });
 
+// App-owned dictionary writes already have an exact IPC notification. Suppress
+// their chokidar echo so one click does not cause another full Hunspell reload.
+function writeDictionaryFile(filePath, words) {
+  recentSaves.add(filePath);
+  setTimeout(() => recentSaves.delete(filePath), 3000);
+  fs.writeFileSync(filePath, words.join('\n') + '\n', 'utf-8');
+}
+
 ipcMain.handle('add-to-dictionary', (_event, word) => {
   if (!DATA_ROOT || !word) return false;
   try {
@@ -2892,16 +2959,11 @@ ipcMain.handle('add-to-dictionary', (_event, word) => {
       // Insert alphabetically (case-insensitive sort)
       existing.push(word);
       existing.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-      fs.writeFileSync(customPath, existing.join('\n') + '\n', 'utf-8');
+      writeDictionaryFile(customPath, existing);
     }
-    // Notify the main window so it can filter its validationErrors state
+    // Renderers update their live checker, worker caches, and result set from
+    // this exact word notification; rebuilding Hunspell is unnecessary.
     broadcastToAll('dictionary-word-added', word);
-    // Also trigger a full dictionary reload — the file watcher's 'change' event
-    // would normally do this, but if the file was just created (no prior file)
-    // chokidar fires 'add' not 'change', and on 'change' there's a 300ms
-    // stability threshold. Broadcast directly so the renderer + workers update
-    // immediately.
-    broadcastToAll('dictionary-changed');
     return true;
   } catch (e) {
     console.error('Failed to add word to dictionary:', e.message);
@@ -2920,7 +2982,8 @@ ipcMain.handle('remove-from-dictionary', (_event, word) => {
     const idx = existing.indexOf(word);
     if (idx < 0) return false;
     existing.splice(idx, 1);
-    fs.writeFileSync(customPath, existing.join('\n') + '\n', 'utf-8');
+    writeDictionaryFile(customPath, existing);
+    broadcastToAll('dictionary-changed');
     return true;
   } catch (e) {
     console.error('Failed to remove word from dictionary:', e.message);
@@ -2944,12 +3007,9 @@ ipcMain.handle('add-to-dev-dictionary', (_event, word) => {
     if (!existing.includes(word)) {
       existing.push(word);
       existing.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-      fs.writeFileSync(customPath, existing.join('\n') + '\n', 'utf-8');
+      writeDictionaryFile(customPath, existing);
     }
     broadcastToAll('dev-dictionary-word-added', word);
-    // See comment in add-to-dictionary — direct broadcast covers the case where
-    // the dev dictionary file didn't exist yet (chokidar 'add' vs 'change').
-    broadcastToAll('dictionary-changed');
     return true;
   } catch (e) {
     console.error('Failed to add word to dev dictionary:', e.message);
@@ -2968,7 +3028,8 @@ ipcMain.handle('remove-from-dev-dictionary', (_event, word) => {
     const idx = existing.indexOf(word);
     if (idx < 0) return false;
     existing.splice(idx, 1);
-    fs.writeFileSync(customPath, existing.join('\n') + '\n', 'utf-8');
+    writeDictionaryFile(customPath, existing);
+    broadcastToAll('dictionary-changed');
     return true;
   } catch (e) {
     console.error('Failed to remove word from dev dictionary:', e.message);

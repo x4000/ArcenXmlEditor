@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('arcenApi', {
     ipcRenderer.send('detached-validation', file, results);
   },
   getValidationResults: () => ipcRenderer.invoke('get-validation-results'),
+  exportValidationResults: () => ipcRenderer.invoke('export-validation-results'),
   onValidationResults: (callback) => {
     ipcRenderer.on('validation-results', (_event, results) =>
       callback(results)
@@ -229,7 +230,9 @@ contextBridge.exposeInMainWorld('arcenApi', {
   addToDevDictionary: (word) => ipcRenderer.invoke('add-to-dev-dictionary', word),
   removeFromDevDictionary: (word) => ipcRenderer.invoke('remove-from-dev-dictionary', word),
   onDevDictionaryWordAdded: (callback) => {
-    ipcRenderer.on('dev-dictionary-word-added', (_event, word) => callback(word));
+    const listener = (_event, word) => callback(word);
+    ipcRenderer.on('dev-dictionary-word-added', listener);
+    return () => ipcRenderer.removeListener('dev-dictionary-word-added', listener);
   },
   // Grammar LLM (Phase 2 — Anthropic API)
   grammarLLMLoadSettings: () => ipcRenderer.invoke('grammar-llm-load-settings'),
@@ -250,10 +253,14 @@ contextBridge.exposeInMainWorld('arcenApi', {
     ipcRenderer.send('suggestions-computed', requestId, suggestions);
   },
   onDictionaryChanged: (callback) => {
-    ipcRenderer.on('dictionary-changed', () => callback());
+    const listener = () => callback();
+    ipcRenderer.on('dictionary-changed', listener);
+    return () => ipcRenderer.removeListener('dictionary-changed', listener);
   },
   onDictionaryWordAdded: (callback) => {
-    ipcRenderer.on('dictionary-word-added', (_event, word) => callback(word));
+    const listener = (_event, word) => callback(word);
+    ipcRenderer.on('dictionary-word-added', listener);
+    return () => ipcRenderer.removeListener('dictionary-word-added', listener);
   },
 
   // Plugins / Source Control

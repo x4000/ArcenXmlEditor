@@ -25484,6 +25484,12 @@
       if (Array.isArray(devWords)) cachedDevWords = new Set(devWords);
       return;
     }
+    if (type === "add-custom-word") {
+      if (cachedChecker && typeof e.data.word === "string" && e.data.word) {
+        cachedChecker.add(e.data.word);
+      }
+      return;
+    }
     if (type === "update-custom-words") {
       if (Array.isArray(customWords) && dictAff && dictDic) {
         cachedChecker = null;

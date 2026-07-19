@@ -283,7 +283,17 @@ export default function DetachedApp({ windowId }) {
 
   // Listen for dictionary changes
   useEffect(() => {
-    window.arcenApi.onDictionaryChanged(async () => {
+    const pokeActiveEditor = () => {
+      const view = editorViewRef.current;
+      if (!view) return;
+      try {
+        const pos = view.state.doc.length;
+        view.dispatch({ changes: { from: pos, insert: ' ' } });
+        view.dispatch({ changes: { from: pos, to: pos + 1 } });
+      } catch (_) {}
+    };
+
+    const unsubscribeDictionaryChanged = window.arcenApi.onDictionaryChanged(async () => {
       try {
         const dictData = await window.arcenApi.loadSpellingDictionary();
         if (dictData.aff && dictData.dic) {
@@ -296,19 +306,21 @@ export default function DetachedApp({ windowId }) {
           setSpellchecker(checker);
           // Poke the active editor so its ViewPlugin rebuilds decorations with
           // the new dictionary — otherwise squiggles stay stale until typing.
-          const view = editorViewRef.current;
-          if (view) {
-            try {
-              const pos = view.state.doc.length;
-              view.dispatch({ changes: { from: pos, insert: ' ' } });
-              view.dispatch({ changes: { from: pos, to: pos + 1 } });
-            } catch (_) {}
-          }
+          pokeActiveEditor();
         }
       } catch (e) {
         console.error('Failed to reload dictionary:', e);
       }
     });
+    const unsubscribeDictionaryWordAdded = window.arcenApi.onDictionaryWordAdded((word) => {
+      if (!word) return;
+      spellcheckerRef.current?.add?.(word);
+      pokeActiveEditor();
+    });
+    return () => {
+      unsubscribeDictionaryChanged?.();
+      unsubscribeDictionaryWordAdded?.();
+    };
   }, []);
 
   // ── Theme sync ──

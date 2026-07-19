@@ -2430,12 +2430,18 @@ export default function App() {
             spellingBusyRef.current = false;
             const customSet = new Set(dictDataRef.current?.custom || []);
             const devSet = devWordsRef.current;
+            const seenOccurrences = new Set();
             const filteredResults = allSpellingErrors.filter((e) => {
               const m = e.message.match(/^Spelling: "([^"]+)"/);
               if (!m) return true;
               const word = m[1];
               if (customSet.has(word)) return false;
               if (e.isDev && devSet.has(word)) return false;
+              const pos = Number(e.absPos);
+              const location = Number.isFinite(pos) ? `p${pos}` : `l${e.line}|${e.message}`;
+              const key = `${e.file}\0${location}\0${word}\0${e.isDev ? 1 : 0}\0${e.forbiddenChar ? 1 : 0}`;
+              if (seenOccurrences.has(key)) return false;
+              seenOccurrences.add(key);
               return true;
             });
             setValidationErrors((prev) => {
@@ -2832,7 +2838,17 @@ export default function App() {
 
   // Listen for dictionary/grammar ignore changes (external edits or "Add to Dictionary")
   useEffect(() => {
-    window.arcenApi.onDictionaryChanged(async () => {
+    const pokeActiveEditor = () => {
+      const view = editorViewRef.current;
+      if (!view) return;
+      try {
+        const pos = view.state.doc.length;
+        view.dispatch({ changes: { from: pos, insert: ' ' } });
+        view.dispatch({ changes: { from: pos, to: pos + 1 } });
+      } catch (_) {}
+    };
+
+    const unsubscribeDictionaryChanged = window.arcenApi.onDictionaryChanged(async () => {
       try {
         const dictData = await window.arcenApi.loadSpellingDictionary();
         if (dictData.aff && dictData.dic) {
@@ -2863,14 +2879,7 @@ export default function App() {
           // with the new dictionary. The plugin only re-runs on docChanged, so without
           // this nudge, squiggles would stay stale until the user types. This matters
           // when a word is added via the validator window (no inline doc touch happens).
-          const view = editorViewRef.current;
-          if (view) {
-            try {
-              const pos = view.state.doc.length;
-              view.dispatch({ changes: { from: pos, insert: ' ' } });
-              view.dispatch({ changes: { from: pos, to: pos + 1 } });
-            } catch (_) {}
-          }
+          pokeActiveEditor();
         }
       } catch (e) {
         console.error('Failed to reload dictionary:', e);
@@ -2880,13 +2889,24 @@ export default function App() {
     });
     // When a word is added to the dictionary, filter existing spelling errors for that word
     // so resolved entries don't reappear after any future validation-results broadcast.
-    window.arcenApi.onDictionaryWordAdded((word) => {
+    const unsubscribeDictionaryWordAdded = window.arcenApi.onDictionaryWordAdded((word) => {
       if (!word) return;
+      const custom = dictDataRef.current?.custom || [];
+      if (!custom.includes(word)) {
+        dictDataRef.current = { ...dictDataRef.current, custom: [...custom, word] };
+      }
+      spellcheckerRef.current?.add?.(word);
+      for (const worker of spellingWorkerPoolRef.current) {
+        worker.postMessage({ type: 'add-custom-word', word });
+      }
+      pokeActiveEditor();
+
       const prefix = 'Spelling: "' + word + '"';
       setValidationErrors((prev) => {
         const filtered = prev.filter((e) => !e.message.startsWith(prefix));
         if (filtered.length !== prev.length) {
           window.arcenApi.sendValidationResults(filtered);
+          lastSentValidatorRef.current = filtered;
         }
         return filtered;
       });
@@ -2894,18 +2914,36 @@ export default function App() {
     // Same as above but for dev-dictionary additions: only filters out entries
     // that were flagged in dev contexts (isDev === true). Dev dictionary words
     // don't apply to user-facing fields, so non-dev spelling entries should stay.
-    window.arcenApi.onDevDictionaryWordAdded((word) => {
+    const unsubscribeDevDictionaryWordAdded = window.arcenApi.onDevDictionaryWordAdded((word) => {
       if (!word) return;
+      devWordsRef.current.add(word);
+      const devCustom = dictDataRef.current?.devCustom || [];
+      if (!devCustom.includes(word)) {
+        dictDataRef.current = { ...dictDataRef.current, devCustom: [...devCustom, word] };
+      }
+      const devWords = [...devWordsRef.current];
+      for (const worker of spellingWorkerPoolRef.current) {
+        worker.postMessage({ type: 'update-dev-words', devWords });
+      }
+      pokeActiveEditor();
+
       const prefix = 'Spelling: "' + word + '"';
       setValidationErrors((prev) => {
         const filtered = prev.filter((e) => !(e.message.startsWith(prefix) && e.isDev));
         if (filtered.length !== prev.length) {
           window.arcenApi.sendValidationResults(filtered);
+          lastSentValidatorRef.current = filtered;
         }
         return filtered;
       });
     });
-  }, [revalidateAll]);
+
+    return () => {
+      unsubscribeDictionaryChanged?.();
+      unsubscribeDictionaryWordAdded?.();
+      unsubscribeDevDictionaryWordAdded?.();
+    };
+  }, []);
 
   // ── Inline-decoration kick on first spellchecker readiness ──
   // The CM6 ViewPlugin caches a Decoration.none result if it builds before

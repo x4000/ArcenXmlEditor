@@ -78,6 +78,7 @@
       background: var(--tab-bg); color: #fff; cursor: pointer; font-size: 11px;
     }
     .toolbar button:hover { opacity: 0.85; }
+    .toolbar button:disabled { opacity: 0.5; cursor: default; }
     .toolbar .filter-btn {
       background: var(--results-bg); color: var(--text-dim); font-weight: 700; font-size: 11px;
       padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border); cursor: pointer;
@@ -137,6 +138,7 @@
     <button id="spelling-check">Spelling Check</button>
     <button id="grammar-check">Grammar Check</button>
     <button id="grammar-settings" title="Configure the grammar checker (Anthropic API key, model)">⚙</button>
+    <button id="export-results" disabled title="Write all current errors and warnings to xmlErrorsWarnings.txt at the project root">Export Errors/Warnings</button>
     <span class="filter-btn" id="filter-all">All</span>
     <span class="filter-btn" id="filter-errors">Errors</span>
     <span class="filter-btn" id="filter-warnings">Warnings</span>
@@ -235,6 +237,8 @@
       if (grammar > 0) parts.push(grammar + ' grammar');
       summary.textContent = parts.join(' \u00b7 ') || 'No issues';
       var total = errors + warnings + spelling + grammar;
+      var exportButton = document.getElementById('export-results');
+      if (exportButton && !exportButton.dataset.busy) exportButton.disabled = total === 0;
       document.title = 'Arcen XML Validator' + (total > 0 ? ' (' + errors + 'E ' + warnings + 'W' + (spelling > 0 ? ' ' + spelling + 'S' : '') + (grammar > 0 ? ' ' + grammar + 'G' : '') + ')' : '');
 
       // Store items for context menu access
@@ -428,6 +432,31 @@
       window.arcenApi?.requestRevalidate?.();
     });
 
+    document.getElementById('export-results')?.addEventListener('click', async () => {
+      var btn = document.getElementById('export-results');
+      var originalText = 'Export Errors/Warnings';
+      btn.dataset.busy = 'true';
+      btn.disabled = true;
+      btn.textContent = 'Writing...';
+      try {
+        var result = await window.arcenApi?.exportValidationResults?.();
+        btn.textContent = 'Saved ' + (result?.count || 0) + ' Issues';
+        btn.title = 'Saved to ' + (result?.outputPath || 'xmlErrorsWarnings.txt');
+      } catch (error) {
+        btn.textContent = 'Export Failed';
+        btn.title = error?.message || 'Could not write xmlErrorsWarnings.txt';
+      } finally {
+        delete btn.dataset.busy;
+        setTimeout(function() {
+          btn.textContent = originalText;
+          btn.disabled = !allResults.some(function(result) {
+            return result?.severity === 'error' || result?.severity === 'warning';
+          });
+          btn.title = 'Write all current errors and warnings to xmlErrorsWarnings.txt at the project root';
+        }, 2500);
+      }
+    });
+
     document.getElementById('grammar-check')?.addEventListener('click', () => {
       var btn = document.getElementById('grammar-check');
       var startTime = Date.now();
@@ -560,13 +589,8 @@
           var addDict = document.createElement('div');
           addDict.className = 'context-menu-item';
           addDict.textContent = 'Add "' + misspelledWord + '" to Dictionary';
-          addDict.addEventListener('click', function() {
-            window.arcenApi?.addToDictionary(misspelledWord);
-            // Remove all spelling entries for this word
-            allResults = allResults.filter(function(r) {
-              return !(r.message.startsWith('Spelling: "' + misspelledWord + '"'));
-            });
-            renderResults();
+          addDict.addEventListener('click', async function() {
+            await window.arcenApi?.addToDictionary(misspelledWord);
             dismissContextMenu();
           });
           menu.appendChild(addDict);
@@ -687,12 +711,8 @@
           var addDict = document.createElement('div');
           addDict.className = 'context-menu-item';
           addDict.textContent = 'Add "' + misspelledWord + '" to Dictionary (global)';
-          addDict.addEventListener('click', function() {
-            window.arcenApi?.addToDictionary(misspelledWord);
-            allResults = allResults.filter(function(r) {
-              return !(r.message.startsWith('Spelling: "' + misspelledWord + '"'));
-            });
-            renderResults();
+          addDict.addEventListener('click', async function() {
+            await window.arcenApi?.addToDictionary(misspelledWord);
             dismissContextMenu();
           });
           menu.appendChild(addDict);
@@ -702,12 +722,8 @@
             var addDevDict = document.createElement('div');
             addDevDict.className = 'context-menu-item';
             addDevDict.textContent = 'Add "' + misspelledWord + '" to Dev Dictionary (dev fields only)';
-            addDevDict.addEventListener('click', function() {
-              window.arcenApi?.addToDevDictionary(misspelledWord);
-              allResults = allResults.filter(function(r) {
-                return !(r.message.startsWith('Spelling: "' + misspelledWord + '"') && r.isDev);
-              });
-              renderResults();
+            addDevDict.addEventListener('click', async function() {
+              await window.arcenApi?.addToDevDictionary(misspelledWord);
               dismissContextMenu();
             });
             menu.appendChild(addDevDict);

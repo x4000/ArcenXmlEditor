@@ -152,6 +152,15 @@ self.onmessage = async function (e) {
     return;
   }
 
+  if (type === 'add-custom-word') {
+    // Dictionary additions are the hot path when triaging a large spelling
+    // result set. Mutate the warmed checker instead of rebuilding Hunspell.
+    if (cachedChecker && typeof e.data.word === 'string' && e.data.word) {
+      cachedChecker.add(e.data.word);
+    }
+    return;
+  }
+
   if (type === 'update-custom-words') {
     // User added/removed a global-dictionary word. The simplest correct fix is
     // to invalidate the cached checker so the next warmup/validate call rebuilds
