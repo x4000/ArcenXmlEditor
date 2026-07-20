@@ -348,7 +348,11 @@
           el.textContent = displayPath(row.file) + ' (' + row.count + ')';
           el.title = row.file;
           el.onclick = null;
-          el.oncontextmenu = null;
+          (function(capturedFile) {
+            el.oncontextmenu = hasFileSpellingEntries(capturedFile) ? function(e) {
+              showFileSpellingMenu(e, capturedFile);
+            } : null;
+          })(row.file);
         } else {
           var item = row.item;
           var suggestions = parseSuggestion(item.message);
@@ -505,6 +509,89 @@
 
     // Context menu for suggestion-based fixes
     let activeContextMenu = null;
+
+    function fileSpellingBatch(file) {
+      var entries = allResults.filter(function(item) {
+        return item.file === file && typeof item.message === 'string' && item.message.startsWith('Spelling:');
+      });
+      var words = [];
+      var seenWords = new Set();
+      var positions = [];
+      var seenPositions = new Set();
+
+      entries.forEach(function(item) {
+        // Forbidden-character diagnostics deliberately stay out of dictionaries;
+        // adding punctuation there would not make the hard replacement rule pass.
+        if (!item.forbiddenChar) {
+          var match = item.message.match(/^Spelling: "([^"]+)"/);
+          if (match && !seenWords.has(match[1])) {
+            seenWords.add(match[1]);
+            words.push(match[1]);
+          }
+        }
+        if (typeof item.absPos === 'number' && !seenPositions.has(item.absPos)) {
+          seenPositions.add(item.absPos);
+          positions.push(item.absPos);
+        }
+      });
+
+      return { entries: entries, words: words, positions: positions };
+    }
+
+    function hasFileSpellingEntries(file) {
+      return allResults.some(function(item) {
+        return item.file === file && typeof item.message === 'string' && item.message.startsWith('Spelling:');
+      });
+    }
+
+    function showFileSpellingMenu(event, file) {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissContextMenu();
+
+      var batch = fileSpellingBatch(file);
+      if (batch.entries.length === 0) return;
+
+      var menu = document.createElement('div');
+      menu.className = 'context-menu';
+      menu.style.top = event.clientY + 'px';
+      menu.style.left = event.clientX + 'px';
+      var actionStarted = false;
+
+      if (batch.words.length > 0 && window.arcenApi?.addWordsToDictionary) {
+        var addAll = document.createElement('div');
+        addAll.className = 'context-menu-item';
+        addAll.textContent = 'Add ' + batch.words.length + ' Spelling Entries To Dictionary';
+        addAll.addEventListener('click', function() {
+          if (actionStarted) return;
+          actionStarted = true;
+          dismissContextMenu();
+          window.arcenApi.addWordsToDictionary(batch.words);
+        });
+        menu.appendChild(addAll);
+      }
+
+      if (batch.positions.length > 0 && window.arcenApi?.requestIgnoreNodes) {
+        var ignoreAll = document.createElement('div');
+        ignoreAll.className = 'context-menu-item';
+        ignoreAll.textContent = 'Ignore ' + batch.positions.length + ' Spellings In File';
+        ignoreAll.addEventListener('click', function() {
+          if (actionStarted) return;
+          actionStarted = true;
+          dismissContextMenu();
+          window.arcenApi.requestIgnoreNodes(file, batch.positions);
+        });
+        menu.appendChild(ignoreAll);
+      }
+
+      if (!menu.children.length) return;
+      document.body.appendChild(menu);
+      activeContextMenu = menu;
+
+      var rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - rect.width - 4) + 'px';
+      if (rect.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
+    }
 
     function showSuggestionMenu(event, itemIdx) {
       event.preventDefault();

@@ -521,6 +521,13 @@ spellcheck: `<h1>Spellcheck</h1>
 </ul>
 <p>The dev dictionary is never added to automatically &mdash; even in dev-flagged fields, you explicitly choose "Add to dictionary" (global) or "Add to dev dictionary" (dev-only) per word.</p>
 
+<h2>Right-Click a Filename in the Validator</h2>
+<p>When a file has spelling results, right-click its filename header to process the whole file:</p>
+<ul>
+<li><strong>Add N Spelling Entries To Dictionary</strong> &mdash; adds every distinct misspelled word in that file to the global dictionary. Repeated occurrences are added only once. Forbidden punctuation entries are excluded because they must be replaced rather than added to a dictionary.</li>
+<li><strong>Ignore N Spellings In File</strong> &mdash; applies <code>no_spellcheck_or_grammar="true"</code> to every node containing a spelling result. A node with multiple misspellings receives the attribute only once, and a node that already has it is left unchanged.</li>
+</ul>
+
 <h2>Homoglyphs and Mixed Scripts</h2>
 <p>Words containing characters from multiple scripts (e.g. Latin letters mixed with visually-identical Cyrillic lookalikes) are flagged as "mixed script / homoglyph" warnings. The validator often suggests the ASCII-normalized version so you can see what the word "should" look like.</p>
 

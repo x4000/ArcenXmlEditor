@@ -25490,6 +25490,14 @@
       }
       return;
     }
+    if (type === "add-custom-words") {
+      if (cachedChecker && Array.isArray(e.data.words)) {
+        for (const word of new Set(e.data.words)) {
+          if (typeof word === "string" && word) cachedChecker.add(word);
+        }
+      }
+      return;
+    }
     if (type === "update-custom-words") {
       if (Array.isArray(customWords) && dictAff && dictDic) {
         cachedChecker = null;

@@ -159,6 +159,9 @@ contextBridge.exposeInMainWorld('arcenApi', {
   requestIgnoreNode: (file, absPos) => {
     ipcRenderer.send('request-ignore-node', file, absPos);
   },
+  requestIgnoreNodes: (file, absPositions) => {
+    ipcRenderer.send('request-ignore-node', file, absPositions);
+  },
   onRequestReplace: (callback) => {
     ipcRenderer.on('request-replace', (_event, file, oldText, newText) => callback(file, oldText, newText));
   },
@@ -226,6 +229,7 @@ contextBridge.exposeInMainWorld('arcenApi', {
   // Spelling & Grammar
   loadSpellingDictionary: () => ipcRenderer.invoke('load-spelling-dictionary'),
   addToDictionary: (word) => ipcRenderer.invoke('add-to-dictionary', word),
+  addWordsToDictionary: (words) => ipcRenderer.invoke('add-words-to-dictionary', words),
   removeFromDictionary: (word) => ipcRenderer.invoke('remove-from-dictionary', word),
   addToDevDictionary: (word) => ipcRenderer.invoke('add-to-dev-dictionary', word),
   removeFromDevDictionary: (word) => ipcRenderer.invoke('remove-from-dev-dictionary', word),
@@ -261,6 +265,11 @@ contextBridge.exposeInMainWorld('arcenApi', {
     const listener = (_event, word) => callback(word);
     ipcRenderer.on('dictionary-word-added', listener);
     return () => ipcRenderer.removeListener('dictionary-word-added', listener);
+  },
+  onDictionaryWordsAdded: (callback) => {
+    const listener = (_event, words) => callback(words);
+    ipcRenderer.on('dictionary-words-added', listener);
+    return () => ipcRenderer.removeListener('dictionary-words-added', listener);
   },
 
   // Plugins / Source Control

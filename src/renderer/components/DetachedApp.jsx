@@ -317,9 +317,16 @@ export default function DetachedApp({ windowId }) {
       spellcheckerRef.current?.add?.(word);
       pokeActiveEditor();
     });
+    const unsubscribeDictionaryWordsAdded = window.arcenApi.onDictionaryWordsAdded?.((words) => {
+      for (const word of new Set(Array.isArray(words) ? words : [])) {
+        if (typeof word === 'string' && word) spellcheckerRef.current?.add?.(word);
+      }
+      pokeActiveEditor();
+    });
     return () => {
       unsubscribeDictionaryChanged?.();
       unsubscribeDictionaryWordAdded?.();
+      unsubscribeDictionaryWordsAdded?.();
     };
   }, []);
 

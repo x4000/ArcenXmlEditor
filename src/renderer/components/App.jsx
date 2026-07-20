@@ -19,6 +19,7 @@ import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps
 import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix, isSpellcheckTarget, isMetadataSpellcheckTarget } from '../editor/spellcheck';
 import { extractGrammarTargets } from '../editor/grammarTargets';
 import { fileDisplayName } from '../editor/layerDisplay';
+import { addIgnoreAttributesForSpellingPositions } from '../editor/spellingBatch';
 import NSpell from 'nspell';
 
 /**
@@ -1037,6 +1038,45 @@ export default function App() {
     });
     window.arcenApi.onRequestIgnoreNode((file, absPos) => {
       const content = allFileContentsRef.current[file];
+      if (content && Array.isArray(absPos)) {
+        const positions = absPos.filter((pos) => typeof pos === 'number');
+        const result = addIgnoreAttributesForSpellingPositions(content, positions);
+        if (result.insertions.length === 0) return;
+
+        // Apply every distinct node edit as one transaction/write. Resolving
+        // against the original document and deduplicating by opening-tag start
+        // prevents both shifted positions and repeated attributes.
+        const view = editorViewRef.current;
+        const viewMatchesFile = view && view.state.doc.toString() === content;
+        let updated;
+        if (viewMatchesFile) {
+          view.dispatch({ changes: result.insertions });
+          updated = view.state.doc.toString();
+        } else {
+          updated = result.content;
+          setFileContents((prev) => {
+            if (prev[file] === undefined) return prev;
+            return { ...prev, [file]: updated };
+          });
+        }
+
+        allFileContentsRef.current[file] = updated;
+        window.arcenApi.writeFile(file, updated);
+        setSavedContents((prev) => ({ ...prev, [file]: updated }));
+        lastLiveRescanContentRef.current[file] = updated;
+
+        setValidationErrors((prev) => {
+          const filtered = prev.filter((entry) => {
+            if (entry.file !== file || !entry.message.startsWith('Spelling:')) return true;
+            if (typeof entry.absPos !== 'number') return true;
+            return !result.nodes.some((node) => entry.absPos >= node.start && entry.absPos <= node.end);
+          });
+          if (filtered.length !== prev.length) window.arcenApi.sendValidationResults(filtered);
+          return filtered;
+        });
+        setTimeout(() => revalidateAll(), 50);
+        return;
+      }
       if (!content || typeof absPos !== 'number') return;
       // Find enclosing open tag via a simple scan — we don't need full tokenization
       // since the structure we care about is just `<tagname ... [absPos is inside] ...>`.
@@ -2911,6 +2951,36 @@ export default function App() {
         return filtered;
       });
     });
+    const unsubscribeDictionaryWordsAdded = window.arcenApi.onDictionaryWordsAdded?.((words) => {
+      const uniqueWords = [...new Set((Array.isArray(words) ? words : [])
+        .filter((word) => typeof word === 'string' && word))];
+      if (uniqueWords.length === 0) return;
+
+      const custom = dictDataRef.current?.custom || [];
+      const customSet = new Set(custom);
+      for (const word of uniqueWords) customSet.add(word);
+      dictDataRef.current = { ...dictDataRef.current, custom: [...customSet] };
+
+      for (const word of uniqueWords) spellcheckerRef.current?.add?.(word);
+      for (const worker of spellingWorkerPoolRef.current) {
+        worker.postMessage({ type: 'add-custom-words', words: uniqueWords });
+      }
+      pokeActiveEditor();
+
+      const wordSet = new Set(uniqueWords);
+      setValidationErrors((prev) => {
+        const filtered = prev.filter((entry) => {
+          if (!entry.message.startsWith('Spelling:')) return true;
+          const match = entry.message.match(/^Spelling: "([^"]+)"/);
+          return !match || !wordSet.has(match[1]);
+        });
+        if (filtered.length !== prev.length) {
+          window.arcenApi.sendValidationResults(filtered);
+          lastSentValidatorRef.current = filtered;
+        }
+        return filtered;
+      });
+    });
     // Same as above but for dev-dictionary additions: only filters out entries
     // that were flagged in dev contexts (isDev === true). Dev dictionary words
     // don't apply to user-facing fields, so non-dev spelling entries should stay.
@@ -2941,6 +3011,7 @@ export default function App() {
     return () => {
       unsubscribeDictionaryChanged?.();
       unsubscribeDictionaryWordAdded?.();
+      unsubscribeDictionaryWordsAdded?.();
       unsubscribeDevDictionaryWordAdded?.();
     };
   }, []);

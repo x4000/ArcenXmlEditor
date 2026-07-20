@@ -161,6 +161,17 @@ self.onmessage = async function (e) {
     return;
   }
 
+  if (type === 'add-custom-words') {
+    // File-header batch dictionary action. Deduplication happens before this
+    // message, but Set keeps this path harmless if a caller repeats a word.
+    if (cachedChecker && Array.isArray(e.data.words)) {
+      for (const word of new Set(e.data.words)) {
+        if (typeof word === 'string' && word) cachedChecker.add(word);
+      }
+    }
+    return;
+  }
+
   if (type === 'update-custom-words') {
     // User added/removed a global-dictionary word. The simplest correct fix is
     // to invalidate the cached checker so the next warmup/validate call rebuilds

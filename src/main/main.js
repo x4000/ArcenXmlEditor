@@ -2944,30 +2944,66 @@ function writeDictionaryFile(filePath, words) {
   fs.writeFileSync(filePath, words.join('\n') + '\n', 'utf-8');
 }
 
+function cleanDictionaryWords(words) {
+  const unique = new Set();
+  for (const value of (Array.isArray(words) ? words : [words])) {
+    if (typeof value !== 'string') continue;
+    const word = value.trim();
+    if (!word || /[\r\n]/.test(word)) continue;
+    unique.add(word);
+  }
+  return [...unique];
+}
+
+function addGlobalDictionaryWords(words) {
+  const requested = cleanDictionaryWords(words);
+  if (!DATA_ROOT || requested.length === 0) return { ok: false, accepted: [], added: [] };
+
+  const customPath = path.join(DATA_HOME, '_spellingDictionary.txt');
+  let existing = [];
+  if (fs.existsSync(customPath)) {
+    existing = fs.readFileSync(customPath, 'utf-8')
+      .split(/\r?\n/)
+      .filter((word) => word.trim().length > 0);
+  }
+
+  const existingSet = new Set(existing);
+  const added = requested.filter((word) => !existingSet.has(word));
+  if (added.length > 0) {
+    existing.push(...added);
+    existing.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    writeDictionaryFile(customPath, existing);
+  }
+
+  return { ok: true, accepted: requested, added };
+}
+
 ipcMain.handle('add-to-dictionary', (_event, word) => {
   if (!DATA_ROOT || !word) return false;
   try {
-    const customPath = path.join(DATA_HOME, '_spellingDictionary.txt');
-    // Read existing to avoid duplicates
-    let existing = [];
-    if (fs.existsSync(customPath)) {
-      existing = fs.readFileSync(customPath, 'utf-8')
-        .split(/\r?\n/)
-        .filter((w) => w.trim().length > 0);
-    }
-    if (!existing.includes(word)) {
-      // Insert alphabetically (case-insensitive sort)
-      existing.push(word);
-      existing.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-      writeDictionaryFile(customPath, existing);
-    }
+    const result = addGlobalDictionaryWords(word);
+    if (!result.ok) return false;
     // Renderers update their live checker, worker caches, and result set from
     // this exact word notification; rebuilding Hunspell is unnecessary.
-    broadcastToAll('dictionary-word-added', word);
+    broadcastToAll('dictionary-word-added', result.accepted[0]);
     return true;
   } catch (e) {
     console.error('Failed to add word to dictionary:', e.message);
     return false;
+  }
+});
+
+ipcMain.handle('add-words-to-dictionary', (_event, words) => {
+  try {
+    const result = addGlobalDictionaryWords(words);
+    if (!result.ok) return { ok: false, added: 0 };
+    // One event lets renderers update their checker, workers, and validation
+    // snapshot once, even when the file contains many distinct misspellings.
+    broadcastToAll('dictionary-words-added', result.accepted);
+    return { ok: true, added: result.added.length };
+  } catch (e) {
+    console.error('Failed to add words to dictionary:', e.message);
+    return { ok: false, added: 0 };
   }
 });
 
