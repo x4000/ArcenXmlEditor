@@ -200,6 +200,12 @@ export default function App() {
   // bursts (VCS updates, a detached window saving) into one worker re-validate.
   const postWorkerValidationRef = useRef(null);
   const extChangeRevalTimerRef = useRef(null);
+  // Same idea for revalidateAll, which the watcher needs after an externally
+  // written `.metadata` (a schema change invalidates every file in its table,
+  // so the cheap delta post isn't enough — the FK index and per-file merged
+  // schemas have to be rebuilt, exactly as an in-app metadata save does).
+  const revalidateAllRef = useRef(null);
+  const extMetaRevalTimerRef = useRef(null);
   // Snapshot of what was last shipped to the validator window. Used as the
   // source-of-truth comparison for the worker.onmessage "no-op if unchanged"
   // optimization — comparing against React state (which can be updated by
@@ -408,6 +414,122 @@ export default function App() {
     return map;
   }, []);
 
+  // Pick up whatever the *initial* startup scan couldn't have seen: schemas and
+  // file contents that appeared on disk while this session was running.
+  //
+  // The file watcher's `change` handler covers edits to files we already know
+  // about, but a genuinely NEW file only produced `file-added-on-disk` → a
+  // sidebar refresh. Nothing parsed a new `.metadata` into `schemas`, and
+  // nothing read any new file into `allFileContentsRef` — so a schema written
+  // on disk mid-session was treated as absent (every attribute it declares
+  // flagged unknown) and a new XML file's ids were missing from the FK index,
+  // global search and validation, all until the next restart. Reported as:
+  // "new metadata entries were written on disk but AXE acted like they weren't
+  // there until I restarted."
+  //
+  // Only files we don't already have are touched, so the common refresh (a save
+  // elsewhere, a rename) does no extra I/O.
+  const syncNewlyDiscovered = useCallback(async (data) => {
+    const discovered = data.folders || [];
+    const contents = allFileContentsRef.current;
+    const newSchemas = {};
+    const touchedTables = new Set();
+    let contentAdded = false;
+
+    // SharedMetaData created after startup (or unreadable back then).
+    const sharedRel = data.sharedMetadataRelPath || 'SharedMetaData.metadata';
+    if (data.sharedMetadataPath && !sharedSchemaLatest.current) {
+      try {
+        const txt = await window.arcenApi.readFile(data.sharedMetadataPath);
+        const parsed = parseSharedMetadata(txt);
+        if (parsed) {
+          sharedSchemaLatest.current = parsed;
+          setSharedSchema(parsed);
+        }
+        if (contents[sharedRel] === undefined) {
+          contents[sharedRel] = txt;
+          contentAdded = true;
+        }
+      } catch (e) {
+        console.warn('[discovery] Could not read SharedMetaData:', e);
+      }
+    }
+
+    for (const folder of discovered) {
+      // A folder that has a metadata file but no parsed schema is either brand
+      // new or was schemaless until now. (An EDITED schema goes through the
+      // watcher's change path instead, which is why we don't re-read here.)
+      if (folder.metadataPath && !schemasLatest.current[folder.name]) {
+        try {
+          const txt = await window.arcenApi.readFile(folder.metadataPath);
+          const parsed = parseMetadata(txt, folder.name);
+          if (parsed) {
+            newSchemas[folder.name] = parsed;
+            touchedTables.add(folder.name);
+          } else {
+            console.warn(`[discovery] Failed to parse new metadata for folder: ${folder.name}`);
+          }
+          if (folder.metadataRelPath && contents[folder.metadataRelPath] === undefined) {
+            contents[folder.metadataRelPath] = txt;
+            contentAdded = true;
+          }
+        } catch (e) {
+          console.warn(`[discovery] Could not read metadata for folder: ${folder.name}`, e);
+        }
+      }
+      for (const xmlFile of folder.xmlFiles) {
+        if (contents[xmlFile.relativePath] !== undefined) continue;
+        try {
+          contents[xmlFile.relativePath] = await window.arcenApi.readFile(xmlFile.relativePath);
+          contentAdded = true;
+          touchedTables.add(folder.name);
+        } catch (e) {
+          console.warn('[discovery] Could not read new file:', xmlFile.relativePath);
+        }
+      }
+    }
+
+    if (Object.keys(newSchemas).length > 0) {
+      // Advance the ref synchronously — the FK rebuild below and any validation
+      // that fires before React commits both read through it.
+      schemasLatest.current = { ...schemasLatest.current, ...newSchemas };
+      setSchemas((prev) => ({ ...prev, ...newSchemas }));
+    }
+
+    if (touchedTables.size > 0) {
+      const centralIdKey = getCentralIdentifierKey(sharedSchemaLatest.current);
+      const next = { ...fkIndexLatest.current };
+      for (const name of touchedTables) {
+        const folder = discovered.find((f) => f.name === name);
+        const schema = schemasLatest.current[name];
+        if (!folder || !schema?.nodeName) continue;
+        updateTableIndex(
+          next,
+          name,
+          folder.xmlFiles.map((xf) => ({
+            layer: xf.layer || 'base',
+            content: contents[xf.relativePath] || '',
+          })),
+          schema.nodeName,
+          schemasLatest.current,
+          centralIdKey
+        );
+      }
+      fkIndexLatest.current = next;
+      setFkIndex(next);
+    }
+
+    // New content or a new schema both change what's valid — get the worker's
+    // view (and therefore the validator window + status bar) caught up.
+    // Deferred a tick because the worker post reads the `folders` list out of a
+    // render closure: applyDiscovery's setFolders hasn't committed yet, so
+    // posting now would validate against the folder list that predates the new
+    // file and skip it entirely.
+    if (contentAdded || Object.keys(newSchemas).length > 0) {
+      setTimeout(() => postWorkerValidationRef.current?.(), 100);
+    }
+  }, []);
+
   // Apply a discoverData() response to both folders state and the layout
   // metadata (mode, expansions, structural errors). Used everywhere we
   // re-discover after a filesystem change. Async because we also reload
@@ -428,7 +550,8 @@ export default function App() {
     await loadIslands(data.islands);
     islandYamlSourcesRef.current = data.islandYamlSources || {};
     setIslandYamlSources(data.islandYamlSources || {});
-  }, [loadExtensionsAndIndex, loadIslands]);
+    await syncNewlyDiscovered(data);
+  }, [loadExtensionsAndIndex, loadIslands, syncNewlyDiscovered]);
 
   // ── Startup: discover, parse schemas, load files, build index, validate ──
   useEffect(() => {
@@ -1482,6 +1605,28 @@ export default function App() {
             return true;
           };
 
+          // An in-app `.metadata` save calls revalidateAll (see saveFile) so the
+          // validator immediately reflects the new/changed attribute
+          // declarations. An EXTERNAL schema write — Claude, a VCS update,
+          // another editor — used to only swap the in-memory schema: squiggles
+          // updated via the ViewPlugin, but the validator window and the status
+          // bar kept reporting "unknown attribute" for fields the metadata now
+          // declares, until a restart. Mirror the save path, debounced so a
+          // burst of rewritten schema files costs one pass.
+          const scheduleMetadataRevalidate = () => {
+            if (extMetaRevalTimerRef.current) clearTimeout(extMetaRevalTimerRef.current);
+            extMetaRevalTimerRef.current = setTimeout(() => {
+              extMetaRevalTimerRef.current = null;
+              try { revalidateAllRef.current?.(); } catch (_) {}
+              try { runSpellingCheckRef.current?.(); } catch (_) {}
+            }, 800);
+          };
+          const applyMetadataAndRefresh = (text) => {
+            if (!applyMetadata(text)) return false;
+            scheduleMetadataRevalidate();
+            return true;
+          };
+
           // Cancel any retry chain still pending for this exact path — this
           // event is the most recent ground truth, and any older chain still
           // ticking would just re-read the same file we're about to read,
@@ -1500,7 +1645,7 @@ export default function App() {
               if (timers.get(relPath) !== timer) return;
               timers.delete(relPath);
               window.arcenApi.readFile(relPath).then((retryContent) => {
-                if (applyMetadata(retryContent)) return;
+                if (applyMetadataAndRefresh(retryContent)) return;
                 if (attemptsLeft <= 1) {
                   console.warn(`[file-watcher] metadata parse still failing after 30 retries: ${relPath}`);
                   return;
@@ -1517,7 +1662,7 @@ export default function App() {
             timers.set(relPath, timer);
           };
 
-          if (!applyMetadata(content)) scheduleRetry(30);
+          if (!applyMetadataAndRefresh(content)) scheduleRetry(30);
         }
       });
     });
@@ -1691,9 +1836,12 @@ export default function App() {
       return;
     }
 
-    // Check if file is open in another window
+    // Check if file is open in another window. That window is brought to the
+    // front and told to select the tab; we report the hand-off so callers that
+    // wanted to do more than open the file (jump to a line, edit the buffer)
+    // know this window isn't the one holding it — see jumpToFile.
     const otherWindow = await window.arcenApi.findWindowForTab(normPath);
-    if (otherWindow?.found) return; // other window was focused
+    if (otherWindow?.found) return { external: true, windowId: otherWindow.windowId };
 
     // Always read from disk when opening a file — the in-memory cache may be stale
     // if an external process modified the file and the watcher missed it
@@ -1731,6 +1879,27 @@ export default function App() {
     const folderName = folderNameOf(normPath);
     setExpandedFolders((prev) => new Set(prev).add(folderName));
   }, [tabs, sidebarTab]);
+
+  // ── Open a file AND scroll to a line, wherever that file lives ──
+  //
+  // A tab belongs to exactly one window, so a Ctrl+click target may already be
+  // open in a detached window. openFile hands those off (fronting the owning
+  // window), but the line jump has to travel too — otherwise the gesture looks
+  // like it did nothing at all, which is exactly what users saw. Relaying
+  // through `navigate-to-line` reuses the main process's existing router: it
+  // finds the window holding the tab, raises it, and tells it to scroll.
+  //
+  // Resolves { local: false } on a hand-off so navigation.js knows not to edit a
+  // buffer this window doesn't own.
+  const jumpToFile = useCallback(async ({ file, type = 'xml', line = null, highlight = null }) => {
+    const res = await openFile(file, type);
+    if (res?.external) {
+      if (line != null) window.arcenApi.navigateToLine(file, line, highlight, null);
+      return { local: false };
+    }
+    if (line != null) setPendingScrollLine({ _t: Date.now(), file, line, highlight });
+    return { local: true };
+  }, [openFile]);
 
   // ── Close tab ──
   const closeTab = useCallback((index) => {
@@ -2071,11 +2240,9 @@ export default function App() {
     navigateToFKRow(tableName, id, {
       folders,
       getContent: (p) => allFileContentsRef.current[p],
-      openFile,
-      scrollTo: ({ file, line, highlight }) =>
-        setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
+      jumpTo: jumpToFile,
     });
-  }, [folders, openFile]);
+  }, [folders, jumpToFile]);
 
   // Shadow of what the worker currently has. Updated after every successful
   // post so the next call can ship only the delta instead of the full file
@@ -2302,6 +2469,9 @@ export default function App() {
       includeSpelling: false,
     });
   }, [folders, sharedSchema, postValidateToWorker, modSchemaExtensionsList]);
+  // Keep the ref the (empty-deps) file watcher reads pointing at the current
+  // callback — same pattern as postWorkerValidationRef above.
+  revalidateAllRef.current = revalidateAll;
 
   // When sharedSchema changes (e.g. the user edited SharedMetaData.metadata and
   // defined a new attribute), rerun core validation so previously-unknown
@@ -3475,11 +3645,11 @@ export default function App() {
         setFileContents((prev) => ({ ...prev, [p]: c }));
         allFileContentsRef.current[p] = c;
       },
-      openFile,
+      jumpTo: jumpToFile,
       scrollTo: ({ file, line, highlight }) =>
         setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-  }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList, schemas, dataLayout.sharedMetadataRelPath, islands]);
+  }, [activeTab, folders, jumpToFile, layerByRelPath, modSchemaExtensionsList, schemas, dataLayout.sharedMetadataRelPath, islands]);
 
   // ── Ctrl+click an unknown sub-node tag → declare it in the schema ──
   //
@@ -3502,11 +3672,11 @@ export default function App() {
         setFileContents((prev) => ({ ...prev, [p]: c }));
         allFileContentsRef.current[p] = c;
       },
-      openFile,
+      jumpTo: jumpToFile,
       scrollTo: ({ file, line, highlight }) =>
         setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-  }, [activeTab, folders, openFile, layerByRelPath, modSchemaExtensionsList]);
+  }, [activeTab, folders, jumpToFile, layerByRelPath, modSchemaExtensionsList]);
 
   const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
 

@@ -680,6 +680,18 @@ function findWindowForTab(relativePath) {
   return null;
 }
 
+// Raise a window and give it focus. `focus()` alone is not enough on Windows
+// when the target is minimized (it stays minimized) and doesn't reliably put a
+// background sibling window above the caller — `show()` does both. Used by every
+// path that redirects a user gesture to the window that owns a tab (Ctrl+click
+// navigation, validation-window jumps, opening an already-open file).
+function bringWindowToFront(browserWindow) {
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  if (browserWindow.isMinimized()) browserWindow.restore();
+  browserWindow.show();
+  browserWindow.focus();
+}
+
 // Recompute the displayNum for every live detached window and push each
 // new title to its BrowserWindow. Ordering is by the numeric suffix of
 // the stable `det_N` windowId, which matches creation order.
@@ -1355,14 +1367,31 @@ function snapshotMtimes() {
 function checkForChangedFiles() {
   if (!mainWindow || !DATA_ROOT) return;
   const changed = [];
+  const added = [];
   for (const { rel, abs } of iterateAllDataFiles()) {
     try {
       const mtime = fs.statSync(abs).mtimeMs;
-      if (fileMtimes.get(rel) !== mtime) {
+      if (!fileMtimes.has(rel)) {
+        added.push(rel);
+        fileMtimes.set(rel, mtime);
+      } else if (fileMtimes.get(rel) !== mtime) {
         changed.push(rel);
         fileMtimes.set(rel, mtime);
       }
     } catch (_) {}
+  }
+
+  // A path this poll has never seen is NEW, not modified, and has to be
+  // announced as such: `file-changed-on-disk` only reloads content the renderers
+  // already track, whereas `file-added-on-disk` is what triggers re-discovery —
+  // the new folder entering the tree, a new `.metadata` being parsed into the
+  // schema set, a new file's ids folding into the FK index. Announcing an add as
+  // a change (what this loop used to do) left a file that chokidar's own `add`
+  // event missed — atomic writes and rapid batches both cause that on Windows —
+  // invisible to the editor until a restart.
+  for (const relPath of added) {
+    broadcastToAll('file-added-on-disk', relPath);
+    sourceControl.refreshFile(path.join(DATA_ROOT, relPath));
   }
 
   // Emit change events for each changed file
@@ -2599,7 +2628,7 @@ ipcMain.handle('find-window-for-tab', (_event, relativePath) => {
     const entry = windowRegistry.get(windowId);
     if (entry?.browserWindow && !entry.browserWindow.isDestroyed()) {
       entry.browserWindow.webContents.send('focus-tab', relativePath);
-      entry.browserWindow.focus();
+      bringWindowToFront(entry.browserWindow);
       return { found: true, windowId };
     }
   }
@@ -2737,14 +2766,14 @@ ipcMain.on('navigate-to-line', (_event, file, line, highlight, absPos) => {
     const entry = windowRegistry.get(windowId);
     if (entry?.browserWindow && !entry.browserWindow.isDestroyed()) {
       entry.browserWindow.webContents.send('navigate-to-line', file, line, highlight, absPos);
-      entry.browserWindow.focus();
+      bringWindowToFront(entry.browserWindow);
       return;
     }
   }
   // Default to main window (it will open the file)
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('navigate-to-line', file, line, highlight, absPos);
-    mainWindow.focus();
+    bringWindowToFront(mainWindow);
   }
 });
 

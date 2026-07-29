@@ -10,8 +10,18 @@
  * has always had.
  *
  * Each function is UI-framework-agnostic: it reads/writes through callbacks the
- * caller supplies (getContent / setContent / openFile / scrollTo), so it never
+ * caller supplies (getContent / setContent / jumpTo / scrollTo), so it never
  * touches React state directly.
+ *
+ * `jumpTo({file, type, line, highlight})` is the one way these functions open a
+ * target. It exists (instead of an `openFile().then(scrollTo)` pair) because a
+ * tab lives in exactly ONE window: the target file may already be open in a
+ * detached window, in which case the jump has to be delivered THERE rather than
+ * applied to this window's editor. Each window's implementation resolves
+ * `{ local: true }` when it opened the file itself and `{ local: false }` when it
+ * handed the jump off to the window that owns the tab — callers that were about
+ * to edit the file's buffer must bail out on the latter, because that buffer
+ * belongs to another renderer.
  */
 
 /**
@@ -24,11 +34,11 @@
  * @param {object} ctx
  *   folders       Array — discovered folders (each has name, metadataRelPath, xmlFiles)
  *   getContent    (relPath) => string|undefined — current cached file content
- *   openFile      (relPath, type) => Promise — open/activate a tab; resolves once active
- *   scrollTo      ({file, line, highlight}) => void — queue a scroll/highlight
+ *   jumpTo        ({file, type, line, highlight}) => Promise<{local}> — open the
+ *                 file (here, or in the window that already has it) and scroll
  */
 export function navigateToFKRow(tableName, id, ctx) {
-  const { folders, getContent, openFile, scrollTo } = ctx;
+  const { folders, getContent, jumpTo } = ctx;
   const baseName = tableName.replace(/^\d+_/, '');
   const folder = folders.find((f) => {
     const fb = f.name.replace(/^\d+_/, '');
@@ -39,7 +49,7 @@ export function navigateToFKRow(tableName, id, ctx) {
   // Empty ID = navigate to the table's metadata file (from schema editor)
   if (!id) {
     const metaRelPath = folder.metadataRelPath;
-    if (metaRelPath) openFile(metaRelPath, 'schema');
+    if (metaRelPath) jumpTo({ file: metaRelPath, type: 'schema' });
     return;
   }
 
@@ -51,9 +61,7 @@ export function navigateToFKRow(tableName, id, ctx) {
     const idx = content.indexOf(pattern);
     if (idx >= 0) {
       const line = content.slice(0, idx).split('\n').length;
-      openFile(xmlFile.relativePath, 'xml').then(() => {
-        scrollTo({ file: xmlFile.relativePath, line, highlight: id });
-      });
+      jumpTo({ file: xmlFile.relativePath, type: 'xml', line, highlight: id });
       return;
     }
   }
@@ -92,12 +100,10 @@ export function navigateToFKRow(tableName, id, ctx) {
     const content = getContent(bestFile);
     const idx = bestId ? content.indexOf(`id="${bestId}"`) : 0;
     const line = idx >= 0 ? content.slice(0, idx).split('\n').length : 1;
-    openFile(bestFile, 'xml').then(() => {
-      scrollTo({ file: bestFile, line, highlight: bestId });
-    });
+    jumpTo({ file: bestFile, type: 'xml', line, highlight: bestId });
   } else if (folder.xmlFiles.length > 0) {
     // Fall back to first file in folder
-    openFile(folder.xmlFiles[0].relativePath, 'xml');
+    jumpTo({ file: folder.xmlFiles[0].relativePath, type: 'xml' });
   }
 }
 
@@ -166,7 +172,7 @@ function findAttrEnd(content, startIdx) {
  *   schemas              Object — folderName → parsed schema
  *   getContent           (relPath) => string|undefined
  *   setContent           (relPath, content) => void — commit an edited file
- *   openFile             (relPath, type) => Promise
+ *   jumpTo               ({file, type, line, highlight}) => Promise<{local}>
  *   scrollTo             ({file, line, highlight}) => void
  *   scheduleScroll       (fn) => void — defer a scroll until after the inserted
  *                        content commits (App uses a 100ms timeout); optional,
@@ -176,7 +182,7 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
   const {
     activeRelPath, folderNameOf, folders, sharedMetadataRelPath,
     layerByRelPath, modSchemaExtensions, schemas,
-    getContent, setContent, openFile, scrollTo,
+    getContent, setContent, jumpTo, scrollTo,
     scheduleScroll = (fn) => setTimeout(fn, 100),
     island = null,
   } = ctx;
@@ -249,16 +255,19 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
   }
 
   if (hit) {
-    openFile(hit.file, 'schema').then(() => {
-      scrollTo({ file: hit.file, line: hit.line, highlight: attrName });
-    });
+    jumpTo({ file: hit.file, type: 'schema', line: hit.line, highlight: attrName });
     return;
   }
 
   // Not declared anywhere — fall through to FIELD_NEEDED insertion.
   const metaRelPath = insertTarget;
   if (!metaRelPath) return;
-  openFile(metaRelPath, 'schema').then(() => {
+  jumpTo({ file: metaRelPath, type: 'schema' }).then((res) => {
+    // The schema file is open in another window, which now has focus. Its
+    // renderer owns that buffer, so inserting the stub here would write into a
+    // file we don't have a tab for — silently, and invisibly to the user.
+    // Fronting the file is as far as we can take it.
+    if (res && res.local === false) return;
     const metaContent = getContent(metaRelPath);
     if (!metaContent) return;
 
@@ -356,7 +365,7 @@ export function navigateToMetadataDef(attrName, parentTag, ctx) {
 export function addUnknownSubNodeStub(tagName, ctx) {
   const {
     activeRelPath, folderNameOf, folders, layerByRelPath, modSchemaExtensions,
-    getContent, setContent, openFile, scrollTo,
+    getContent, setContent, jumpTo, scrollTo,
     scheduleScroll = (fn) => setTimeout(fn, 100),
     notify = (msg) => { try { globalThis.alert?.(msg); } catch (_) {} },
   } = ctx;
@@ -382,7 +391,10 @@ export function addUnknownSubNodeStub(tagName, ctx) {
     return;
   }
 
-  openFile(metaRelPath, 'schema').then(() => {
+  jumpTo({ file: metaRelPath, type: 'schema' }).then((res) => {
+    // Another window owns this schema file's buffer — see the matching note in
+    // navigateToMetadataDef. Front it and stop.
+    if (res && res.local === false) return;
     const metaContent = getContent(metaRelPath);
     if (!metaContent) return;
 

@@ -48,6 +48,18 @@ export default function DetachedApp({ windowId }) {
 
   const allFileContentsRef = useRef({});
   const schemasRef = useRef({});
+  // Bumped whenever schemasRef / sharedSchemaRef are replaced from disk. Those
+  // are refs (mutating them can't trigger a render), but activeSchema and
+  // composedMergedSchema are derived from them during render — so a schema that
+  // changed on disk would sit in the ref, unused, until some unrelated state
+  // change happened to re-render. This is the render trigger.
+  const [schemaVersion, setSchemaVersion] = useState(0);
+  // metadataRelPath → { modLayer, folderName } for mod schema EXTENSIONS, so the
+  // file watcher can tell an extension apart from a table's primary schema.
+  // Without it, a change to `XMLMods/<Mod>/GameEntity/_GameEntity.metadata`
+  // would overwrite the real GameEntity schema with the extension's much
+  // shorter attribute list. Mirrors App.jsx's extensionsMetaRef.
+  const extensionsMetaRef = useRef(new Map());
   // "Island" data files (self-contained extra data sources, decoded from YAML
   // by the main process). relPath → standalone schema. State, not a ref, so the
   // composedMergedSchema memo recomputes when islands finish loading. Mirrors
@@ -154,6 +166,7 @@ export default function DetachedApp({ windowId }) {
       // Mirrors the main window's loadExtensionsAndIndex; without this, mod data
       // files opened here flag every mod-added attribute as unknown.
       const extensionsMap = {};
+      const extMeta = new Map();
       for (const ext of (data.schemaExtensions || [])) {
         try {
           const txt = await window.arcenApi.readFile(ext.metadataRelPath);
@@ -161,8 +174,10 @@ export default function DetachedApp({ windowId }) {
           if (!parsed) continue;
           if (!extensionsMap[ext.modLayer]) extensionsMap[ext.modLayer] = {};
           extensionsMap[ext.modLayer][ext.folderName] = parsed;
+          extMeta.set(ext.metadataRelPath, { modLayer: ext.modLayer, folderName: ext.folderName });
         } catch (_) {}
       }
+      extensionsMetaRef.current = extMeta;
       setSchemaExtensions(extensionsMap);
 
       // Parse island standalone schemas, indexed by each island data file's
@@ -415,12 +430,22 @@ export default function DetachedApp({ windowId }) {
       if (idx >= 0) setActiveTabIndex(idx);
     });
 
-    window.arcenApi.onNavigateToLine((rawFile, line) => {
+    // Jump requests routed here by the main process: from the validation window,
+    // or from another window's Ctrl+click navigation into a file THIS window
+    // owns. `highlight` / `absPos` were previously dropped, so a relayed jump
+    // landed on the line without selecting the id/attribute the user clicked
+    // through to; `_t` makes a repeat of the same jump re-fire (EditorPane keys
+    // its scroll effect on the token). See [[detached-window-parity]].
+    window.arcenApi.onNavigateToLine((rawFile, line, highlight, absPos) => {
       const file = norm(rawFile);
       const idx = tabsRef.current.findIndex(t => t.relativePath === file);
       if (idx >= 0) {
         setActiveTabIndex(idx);
-        setPendingScrollLine({ file, line });
+        setPendingScrollLine({
+          _t: Date.now(), file, line,
+          highlight: highlight || null,
+          absPos: absPos != null ? absPos : null,
+        });
       }
     });
   }, []);
@@ -444,6 +469,107 @@ export default function DetachedApp({ windowId }) {
     window.arcenApi.detachTabAtPosition(relativePath, screenX, screenY, buffer);
   }, []);
 
+  // Re-run discovery and refresh everything derived from it: folder/layer
+  // lookups, mod schema extensions, islands, plus any schema or file content
+  // that appeared on disk after startup. Shared by the mod-set-changed and
+  // file-added paths. Mirrors the main window's applyDiscovery +
+  // syncNewlyDiscovered — see [[detached-window-parity]].
+  const refreshDiscoveredData = useCallback(async () => {
+    let data;
+    try {
+      data = await window.arcenApi.discoverData();
+    } catch (e) {
+      console.warn('[detached] discovery refresh failed:', e);
+      return;
+    }
+    foldersRef.current = data.folders;
+
+    const m = new Map();
+    const layerM = new Map();
+    for (const folder of data.folders) {
+      for (const xf of folder.xmlFiles) {
+        m.set(xf.relativePath, folder.name);
+        if (xf.layer && xf.layer !== 'base') {
+          layerM.set(xf.relativePath, { layer: xf.layer, layerNum: xf.layerNum });
+        }
+      }
+      if (folder.metadataRelPath) m.set(folder.metadataRelPath, folder.name);
+    }
+    folderNameByRelPathRef.current = m;
+    setLayerByRelPath(layerM);
+    layerMapsRef.current = buildLayerMaps(data.expansions, data.mods);
+    sharedMetadataRelPathRef.current = data.sharedMetadataRelPath || 'SharedMetaData.metadata';
+
+    // Mod schema extensions (a mod may have just gained a partial schema file).
+    const extensionsMap = {};
+    const extMeta = new Map();
+    for (const ext of (data.schemaExtensions || [])) {
+      try {
+        const txt = await window.arcenApi.readFile(ext.metadataRelPath);
+        const parsed = parseMetadata(txt, ext.folderName);
+        if (!parsed) continue;
+        if (!extensionsMap[ext.modLayer]) extensionsMap[ext.modLayer] = {};
+        extensionsMap[ext.modLayer][ext.folderName] = parsed;
+        extMeta.set(ext.metadataRelPath, { modLayer: ext.modLayer, folderName: ext.folderName });
+      } catch (_) {}
+    }
+    extensionsMetaRef.current = extMeta;
+    setSchemaExtensions(extensionsMap);
+
+    // Islands (a new .asset data file may have appeared).
+    {
+      const islandMap = new Map();
+      const relSet = new Set();
+      for (const isl of (data.islands || [])) {
+        let parsed = null;
+        try {
+          const txt = await window.arcenApi.readFile(isl.metadataRelPath);
+          parsed = parseMetadata(txt, isl.name);
+        } catch (_) {}
+        for (const f of (isl.files || [])) {
+          relSet.add(f.relativePath);
+          if (parsed) islandMap.set(f.relativePath, parsed);
+        }
+      }
+      islandRelPathsRef.current = relSet;
+      setIslandSchemaByRelPath(islandMap);
+    }
+
+    // Schemas and file contents this session has never seen. Only the missing
+    // ones are read — edits to known files come through the change watcher.
+    const contents = allFileContentsRef.current;
+    const touchedTables = new Set();
+    let schemaAdded = false;
+    for (const folder of data.folders) {
+      if (folder.metadataPath && !schemasRef.current[folder.name]) {
+        try {
+          const txt = await window.arcenApi.readFile(folder.metadataPath);
+          const parsed = parseMetadata(txt, folder.name);
+          if (parsed) {
+            schemasRef.current = { ...schemasRef.current, [folder.name]: parsed };
+            schemaAdded = true;
+            touchedTables.add(folder.name);
+          }
+          if (folder.metadataRelPath && contents[folder.metadataRelPath] === undefined) {
+            contents[folder.metadataRelPath] = txt;
+          }
+        } catch (_) {}
+      }
+      for (const xf of folder.xmlFiles) {
+        if (contents[xf.relativePath] !== undefined) continue;
+        try {
+          contents[xf.relativePath] = await window.arcenApi.readFile(xf.relativePath);
+          touchedTables.add(folder.name);
+        } catch (_) {}
+      }
+    }
+    for (const name of touchedTables) foldTableIntoFKIndex(name, data.folders);
+    if (schemaAdded) setSchemaVersion((v) => v + 1);
+  }, []);
+  // Read by the once-registered IPC handlers below instead of re-subscribing.
+  const refreshDiscoveredDataRef = useRef(null);
+  refreshDiscoveredDataRef.current = refreshDiscoveredData;
+
   useEffect(() => {
     // Normalize any backslash separators on incoming paths so content
     // state never accumulates two entries for the same file — see the
@@ -454,28 +580,23 @@ export default function DetachedApp({ windowId }) {
     // the layer maps + folder lookups built from discoverData — refresh those so a
     // newly-added mod's layer is recognized without a restart. See
     // detached-window-parity.
-    window.arcenApi.onLayersChanged(async () => {
-      try {
-        const data = await window.arcenApi.discoverData();
-        foldersRef.current = data.folders;
-        const m = new Map();
-        const layerM = new Map();
-        for (const folder of data.folders) {
-          for (const xf of folder.xmlFiles) {
-            m.set(xf.relativePath, folder.name);
-            if (xf.layer && xf.layer !== 'base') {
-              layerM.set(xf.relativePath, { layer: xf.layer, layerNum: xf.layerNum });
-            }
-          }
-          if (folder.metadataRelPath) m.set(folder.metadataRelPath, folder.name);
-        }
-        folderNameByRelPathRef.current = m;
-        setLayerByRelPath(layerM);
-        layerMapsRef.current = buildLayerMaps(data.expansions, data.mods);
-      } catch (e) {
-        console.warn('[detached] layers-changed refresh failed:', e);
-      }
+    window.arcenApi.onLayersChanged(() => { refreshDiscoveredDataRef.current?.(); });
+
+    // A file appeared on disk (new XML data file, new `.metadata`, a mod's new
+    // partial schema). The main window refreshes its sidebar here; this window
+    // has no sidebar but does need the new schema/content, or it treats what's
+    // on disk as absent — flagging every attribute a brand-new metadata file
+    // declares as unknown — until a restart. Debounced because chokidar fires a
+    // burst for bulk operations (folder rename, VCS update).
+    let addRefreshTimer = null;
+    window.arcenApi.onFileAddedOnDisk?.(() => {
+      if (addRefreshTimer) clearTimeout(addRefreshTimer);
+      addRefreshTimer = setTimeout(() => {
+        addRefreshTimer = null;
+        refreshDiscoveredDataRef.current?.();
+      }, 200);
     });
+
     window.arcenApi.onFileChangedOnDisk((rawRelPath) => {
       const relPath = norm(rawRelPath);
       if (recentSavesRef.current.has(relPath)) return;
@@ -494,6 +615,12 @@ export default function DetachedApp({ windowId }) {
         // Keep FK pickers current for externally-changed XML (main window,
         // external tools, VCS) — no-ops for .metadata internally.
         foldXmlFileIntoFKIndex(relPath);
+        // A changed `.metadata` has to be re-parsed into this window's schemas,
+        // or the editor keeps validating/highlighting against the schema as it
+        // was when this window opened. That was the gap behind "metadata written
+        // on disk looked absent until I restarted": the main window re-parsed,
+        // detached windows never did.
+        if (relPath.endsWith('.metadata')) applyMetadataFromDisk(relPath, content);
         if (fileContentsLatest.current[relPath] !== undefined) {
           setFileContents(prev => ({ ...prev, [relPath]: content }));
           setSavedContents(prev => ({ ...prev, [relPath]: content }));
@@ -547,6 +674,31 @@ export default function DetachedApp({ windowId }) {
     syncTabs();
   }, [tabs]);
 
+  // ── Open a file AND scroll to a line, wherever that file lives ──
+  //
+  // Mirrors App.jsx's jumpToFile. A tab belongs to exactly one window, so a
+  // Ctrl+click target may be open in the main window or a sibling detached
+  // window; opening a second copy here would fork the buffer. Ask the main
+  // process who owns it (which also raises that window) and relay the jump via
+  // `navigate-to-line` instead. Resolves { local: false } on a hand-off so
+  // navigation.js knows not to edit a buffer this window doesn't own.
+  //
+  // The local-tabs check comes first because find-window-for-tab would report
+  // THIS window as the owner for a tab we already have. See
+  // [[detached-window-parity]].
+  const jumpToFile = useCallback(async ({ file, type = 'xml', line = null, highlight = null }) => {
+    if (!tabsRef.current.some((t) => t.relativePath === file)) {
+      const owner = await window.arcenApi.findWindowForTab(file);
+      if (owner?.found) {
+        if (line != null) window.arcenApi.navigateToLine(file, line, highlight, null);
+        return { local: false };
+      }
+    }
+    await openFile(file, type);
+    if (line != null) setPendingScrollLine({ _t: Date.now(), file, line, highlight });
+    return { local: true };
+  }, [openFile]);
+
   // ── Close tab ──
   const closeTab = useCallback((index) => {
     const tab = tabs[index];
@@ -559,16 +711,17 @@ export default function DetachedApp({ windowId }) {
     syncTabs();
   }, [tabs, activeTabIndex, fileContents, savedContents]);
 
-  // Refold one XML file's current cached content into this window's FK index so
-  // a brand-new core node is immediately pickable in the FK dropdowns/lists
-  // without a restart — matching the main window's foldXmlFileIntoFKIndex. The
+  // Rebuild one table's slice of this window's FK index from cached content,
+  // across every layer, so a brand-new core node is immediately pickable in the
+  // FK dropdowns/lists without a restart — matching the main window. The
   // detached window keeps its index in a ref (no validator of its own), so this
-  // only mutates the ref; the re-render from the triggering save/reload hands
-  // the fresh index to EditorPane.
-  const foldXmlFileIntoFKIndex = useCallback((relPath) => {
-    if (relPath.endsWith('.metadata')) return;
-    const folderName = folderNameOf(relPath);
-    const folder = foldersRef.current.find((f) => f.name === folderName);
+  // only mutates the ref; the re-render from the triggering save/reload/refresh
+  // hands the fresh index to EditorPane.
+  //
+  // `folderList` defaults to the current discovery; a refresh in flight passes
+  // its own list, since foldersRef may not yet be the one being folded.
+  const foldTableIntoFKIndex = useCallback((folderName, folderList = null) => {
+    const folder = (folderList || foldersRef.current).find((f) => f.name === folderName);
     const schema = schemasRef.current[folderName];
     if (!folder || !schema || !schema.nodeName) return;
     const layeredContents = folder.xmlFiles.map((xf) => ({
@@ -580,6 +733,65 @@ export default function DetachedApp({ windowId }) {
     updateTableIndex(next, folderName, layeredContents, schema.nodeName, schemasRef.current, centralIdKey);
     fkIndexRef.current = next;
   }, []);
+
+  // Same thing, addressed by a file rather than a table. No-ops for `.metadata`.
+  const foldXmlFileIntoFKIndex = useCallback((relPath) => {
+    if (relPath.endsWith('.metadata')) return;
+    foldTableIntoFKIndex(folderNameOf(relPath));
+  }, [foldTableIntoFKIndex]);
+
+  // Re-parse a `.metadata` file that changed on disk into this window's schema
+  // state. Routes to the same three destinations the main window's applyMetadata
+  // does — shared schema, mod schema extension, or a table's primary schema —
+  // and applies the same "keep the prior schema" guards, because an external
+  // tool caught mid-write can hand us a file that parses to nothing. Adopting
+  // that would flag every attribute in the table as unknown.
+  //
+  // No retry chain here (unlike App.jsx): the main window owns that recovery and
+  // its eventual reload broadcast reaches us as another change event. Returns
+  // whether the schema was adopted.
+  const applyMetadataFromDisk = useCallback((relPath, text) => {
+    if (relPath === sharedMetadataRelPathRef.current) {
+      const newShared = parseSharedMetadata(text);
+      if (!newShared) return false;
+      const prior = sharedSchemaRef.current;
+      if (newShared.attributes.length === 0 && prior?.attributes?.length > 0) return false;
+      sharedSchemaRef.current = newShared;
+      setSchemaVersion((v) => v + 1);
+      return true;
+    }
+
+    // Extension branch first — an extension file shares its folderName with the
+    // base table it extends, so falling through would clobber the real schema.
+    const extInfo = extensionsMetaRef.current.get(relPath);
+    if (extInfo) {
+      const parsedExt = parseMetadata(text, extInfo.folderName);
+      if (!parsedExt) return false;
+      // Extensions are allowed to be empty (a freshly created partial-schema
+      // shell is a bare <root></root>), so no empty-attrs guard here.
+      setSchemaExtensions((prev) => ({
+        ...prev,
+        [extInfo.modLayer]: { ...(prev[extInfo.modLayer] || {}), [extInfo.folderName]: parsedExt },
+      }));
+      return true;
+    }
+
+    const folderName = folderNameOf(relPath);
+    const newSchema = parseMetadata(text, folderName);
+    if (!newSchema) return false;
+    const priorFolder = schemasRef.current[folderName];
+    const priorAttrCount = (priorFolder?.attributes?.length || 0)
+      + (priorFolder?.subNodes?.reduce((n, sn) => n + (sn.attributes?.length || 0), 0) || 0);
+    const newAttrCount = newSchema.attributes.length
+      + newSchema.subNodes.reduce((n, sn) => n + (sn.attributes?.length || 0), 0);
+    if (newAttrCount === 0 && priorAttrCount > 0) return false;
+    schemasRef.current = { ...schemasRef.current, [folderName]: newSchema };
+    // Sub-node id collections (node_sub_source) come from the schema, so the FK
+    // index slice for this table has to be rebuilt too.
+    foldTableIntoFKIndex(folderName);
+    setSchemaVersion((v) => v + 1);
+    return true;
+  }, [foldTableIntoFKIndex]);
 
   // ── Save ──
   const saveFile = useCallback(async (relativePath) => {
@@ -843,7 +1055,10 @@ export default function DetachedApp({ windowId }) {
     const folderName = activeSchema.folderName || folderNameOf(activeTab.relativePath);
     const layer = layerByRelPath.get(activeTab.relativePath)?.layer || 'base';
     return composeSchemaForFileLayer(merged, schemaExtensions, layerMapsRef.current.modExtrasByLayer, layer, folderName);
-  }, [activeTab, activeSchema, schemaExtensions, layerByRelPath, islandSchemaByRelPath]);
+    // schemaVersion is a deliberate dependency: activeSchema and sharedSchemaRef
+    // are read out of refs, so a schema re-parsed from disk needs the version
+    // bump to invalidate this memo.
+  }, [activeTab, activeSchema, schemaExtensions, layerByRelPath, islandSchemaByRelPath, schemaVersion]);
 
   // ── Live validation for the active tab (full parity with the main window) ──
   // A detached window is a real editor, so the file the user is editing here
@@ -901,10 +1116,9 @@ export default function DetachedApp({ windowId }) {
     navigateToFKRow(tableName, id, {
       folders: foldersRef.current,
       getContent: (p) => allFileContentsRef.current[p],
-      openFile,
-      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+      jumpTo: jumpToFile,
     });
-  }, [openFile]);
+  }, [jumpToFile]);
 
   const handleNavigateToMetadata = useCallback((attrName, parentTag) => {
     if (!activeTab) return;
@@ -921,10 +1135,10 @@ export default function DetachedApp({ windowId }) {
         setFileContents((prev) => ({ ...prev, [p]: c }));
         allFileContentsRef.current[p] = c;
       },
-      openFile,
-      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+      jumpTo: jumpToFile,
+      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-  }, [activeTab, layerByRelPath, openFile]);
+  }, [activeTab, layerByRelPath, jumpToFile]);
 
   const handleAddUnknownSubNodeToSchema = useCallback((tagName) => {
     if (!activeTab) return;
@@ -939,10 +1153,10 @@ export default function DetachedApp({ windowId }) {
         setFileContents((prev) => ({ ...prev, [p]: c }));
         allFileContentsRef.current[p] = c;
       },
-      openFile,
-      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ file, line, highlight }),
+      jumpTo: jumpToFile,
+      scrollTo: ({ file, line, highlight }) => setPendingScrollLine({ _t: Date.now(), file, line, highlight }),
     });
-  }, [activeTab, layerByRelPath, openFile]);
+  }, [activeTab, layerByRelPath, jumpToFile]);
 
   const toggleTheme = () => {
     setTheme(t => {
@@ -1175,6 +1389,8 @@ export default function DetachedApp({ windowId }) {
                 onCursorFocusFile={(rp) => window.arcenApi.focusSidebarOnFile?.(rp)}
                 scrollToLine={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.line : null}
                 scrollHighlight={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.highlight : null}
+                scrollToken={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine._t : null}
+                scrollAbsPos={pendingScrollLine?.file === activeTab.relativePath ? pendingScrollLine.absPos : null}
                 onScrolled={() => setPendingScrollLine(null)}
                 editorViewRef={editorViewRef}
                 localSearchStateRef={localSearchStateRef}
