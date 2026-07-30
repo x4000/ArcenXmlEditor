@@ -822,8 +822,19 @@ export default function DetachedApp({ windowId }) {
     setTimeout(() => recentSavesRef.current.delete(relativePath), 5000);
   }, [fileContents, foldXmlFileIntoFKIndex]);
 
+  // Write through to the bulk cache as well as tab state, exactly as the main
+  // window's updateContent does. Every other path here already keeps the cache
+  // current (open, save, reload, revert, schema-stub insert); plain typing was
+  // the one hole, and the cache is what FK navigation searches for `id="…"`. So
+  // Ctrl+click on an FK pointing into a file being edited in THIS window read
+  // the last-saved copy: line numbers shifted by the unsaved edits, or — when
+  // the target id was itself unsaved — no exact match at all, dropping into the
+  // fuzzy most-similar-id fallback and landing somewhere unrelated. The FK index
+  // fold and cross-YAML pickers read the same cache, so they were equally stale.
+  // See [[detached-window-parity]].
   const updateContent = useCallback((relativePath, newContent) => {
     setFileContents(prev => ({ ...prev, [relativePath]: newContent }));
+    allFileContentsRef.current[relativePath] = newContent;
   }, []);
 
   const captureSelectionNow = useCallback(() => {
