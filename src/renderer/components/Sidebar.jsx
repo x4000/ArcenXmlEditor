@@ -125,6 +125,28 @@ export default function Sidebar({
   const [promptDialog, setPromptDialog] = useState(null);
   const openPrompt = (cfg) => setPromptDialog(cfg);
   const contentRef = useRef(null);
+  // Which favorite groups are expanded. Held HERE, not inside FavoritesList,
+  // because that component unmounts whenever another sidebar tab is showing —
+  // its local state reset on every remount, so switching to Explorer and back
+  // collapsed everything the user had opened.
+  //
+  // The reset was doubly bad for the AUTO-managed groups (Beta, DLC1..N): the
+  // seed below only knows about `favorites`, which those aren't in, so they came
+  // back collapsed every single time. That also defeated the scroll-to-active-
+  // file effect below — with the group closed, the active row isn't in the DOM
+  // for it to scroll to, so the sidebar snapped to the top and the user lost
+  // their place too.
+  const [favExpanded, setFavExpanded] = useState(() => new Set((favorites || []).map(g => g.name)));
+  // A group created externally (e.g. a tab-bar "Add to Favorites") should
+  // default to open rather than collapsed — the mount-only seed misses it.
+  useEffect(() => {
+    setFavExpanded((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const g of (favorites || [])) if (!next.has(g.name)) { next.add(g.name); changed = true; }
+      return changed ? next : prev;
+    });
+  }, [favorites]);
   const search = searchByTab[activeTab] || '';
   const setSearch = (val) => setSearchByTab((prev) => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] || '') : val }));
   const lowerSearch = search.toLowerCase();
@@ -382,6 +404,8 @@ export default function Sidebar({
         {activeTab === 'favorites' && (
           <FavoritesList
             favorites={favorites || []}
+            expanded={favExpanded}
+            setExpanded={setFavExpanded}
             onFavoritesChange={onFavoritesChange}
             onOpenFile={onOpenFile}
             activeFiles={activeFileSet}
@@ -1271,7 +1295,9 @@ function IslandsList({ islands, onOpenFile, activeFiles, modifiedFiles, search, 
   );
 }
 
-function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFiles, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
+// `expanded` / `setExpanded` are owned by Sidebar, not this component — this one
+// unmounts on every tab switch, and the expansion set has to outlive that.
+function FavoritesList({ favorites, expanded, setExpanded, onFavoritesChange, onOpenFile, activeFiles, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
   const vcs = useVcsStatus();
 
   // relativePath → xmlFile (carries layer/layerNum) so favorite rows can show
@@ -1348,17 +1374,6 @@ function FavoritesList({ favorites, onFavoritesChange, onOpenFile, activeFiles, 
       }
     }
   };
-  const [expanded, setExpanded] = useState(new Set(favorites.map(g => g.name)));
-  // A group created externally (e.g. a tab-bar "Add to Favorites") should
-  // default to open rather than collapsed — the mount-only seed misses it.
-  useEffect(() => {
-    setExpanded(prev => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const g of favorites) if (!next.has(g.name)) { next.add(g.name); changed = true; }
-      return changed ? next : prev;
-    });
-  }, [favorites]);
   const [newGroupInput, setNewGroupInput] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const newGroupRef = useRef(null);
