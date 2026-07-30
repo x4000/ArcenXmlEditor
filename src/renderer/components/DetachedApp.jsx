@@ -421,6 +421,22 @@ export default function DetachedApp({ windowId }) {
         return filtered;
       });
       activationHistoryRef.current = activationHistoryRef.current.filter(p => p !== relativePath);
+      // Drop the buffers for a tab that moved to another window — same reasoning
+      // as App.jsx's onTabRemoved: a leftover copy reads as "unsaved edits here"
+      // and makes the save notification for that file take the conflict branch
+      // instead of refreshing this window's cache and FK index.
+      setFileContents(prev => {
+        if (prev[relativePath] === undefined) return prev;
+        const next = { ...prev };
+        delete next[relativePath];
+        return next;
+      });
+      setSavedContents(prev => {
+        if (prev[relativePath] === undefined) return prev;
+        const next = { ...prev };
+        delete next[relativePath];
+        return next;
+      });
       syncTabs();
     });
 
@@ -603,7 +619,11 @@ export default function DetachedApp({ windowId }) {
       window.arcenApi.readFile(relPath).then((content) => {
         const cur = fileContentsLatest.current[relPath];
         const sav = savedContentsLatest.current[relPath];
-        if (cur !== undefined && cur !== sav) {
+        // Same guard as App.jsx: only a tab we still hold can have unsaved edits
+        // to protect. A leftover buffer would otherwise divert a save made in
+        // another window into the conflict path.
+        const haveTab = tabsRef.current.some(t => t.relativePath === relPath);
+        if (haveTab && cur !== undefined && cur !== sav) {
           if (content === cur) {
             setSavedContents(prev => ({ ...prev, [relPath]: content }));
             return;

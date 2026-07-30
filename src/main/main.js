@@ -664,6 +664,27 @@ function broadcastToAll(channel, ...args) {
   }
 }
 
+// Broadcast to every editor window EXCEPT the one that triggered it.
+//
+// Used by `write-file`: chokidar's event for our own write is swallowed by
+// `recentSaves` (§15.3) so the saving window isn't yanked mid-edit, but that
+// suppression is global — it also hid the save from every OTHER window. Since a
+// tab lives in exactly one window, a node added in a detached window never
+// reached the main window's content cache, FK index, validator or global search
+// until a restart. The saving window is excluded because it already applied the
+// change locally; re-notifying it would just make it re-read its own bytes.
+//
+// Deliberately does NOT include the validation window — it renders results, not
+// file content.
+function broadcastToOtherWindows(senderWebContents, channel, ...args) {
+  for (const entry of windowRegistry.values()) {
+    const bw = entry.browserWindow;
+    if (!bw || bw.isDestroyed()) continue;
+    if (bw.webContents === senderWebContents) continue;
+    bw.webContents.send(channel, ...args);
+  }
+}
+
 function getWindowIdForWebContents(wc) {
   for (const [id, entry] of windowRegistry) {
     if (entry.browserWindow && !entry.browserWindow.isDestroyed() && entry.browserWindow.webContents === wc) {
@@ -2235,7 +2256,7 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   return raw.replace(/\r\n?|\n/g, '\n');
 });
 
-ipcMain.handle('write-file', async (_event, filePath, content) => {
+ipcMain.handle('write-file', async (event, filePath, content) => {
   if (!path.isAbsolute(filePath) && !DATA_ROOT) {
     throw new Error('No data root configured');
   }
@@ -2264,6 +2285,7 @@ ipcMain.handle('write-file', async (_event, filePath, content) => {
     fs.writeFileSync(fullPath, newYaml, 'utf-8');
     const relPathI = relFwd(fullPath);
     try { fileMtimes.set(relPathI, fs.statSync(fullPath).mtimeMs); } catch (_) {}
+    broadcastToOtherWindows(event.sender, 'file-changed-on-disk', relPathI);
     sourceControl.refreshFile(fullPath);
     return true;
   }
@@ -2286,6 +2308,12 @@ ipcMain.handle('write-file', async (_event, filePath, content) => {
   // Forward-slash form to match snapshotMtimes (which keys by "name/file").
   const relPath = relFwd(fullPath);
   try { fileMtimes.set(relPath, fs.statSync(fullPath).mtimeMs); } catch (_) {}
+
+  // Let the other windows in on it. The chokidar broadcast for this write is
+  // suppressed (recentSaves), and the mtime snapshot above stops the focus poll
+  // from catching it either — so without this, a save in one window was
+  // invisible everywhere else until a restart. See broadcastToOtherWindows.
+  broadcastToOtherWindows(event.sender, 'file-changed-on-disk', relPath);
 
   // Refresh the file's VCS status (if an active source-control provider
   // is connected). Fire-and-forget — callers don't block on it.

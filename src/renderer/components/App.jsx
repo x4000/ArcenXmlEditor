@@ -1001,6 +1001,29 @@ export default function App() {
         });
         return filtered;
       });
+      // Drop this file's buffers. The tab — and the authoritative copy of its
+      // content — now lives in another window; a copy left behind here is stale
+      // the moment that window types into it. It also makes this window
+      // mis-handle the save notification for that file: `fileContents` still
+      // differing from `savedContents` reads as "we have unsaved edits", so the
+      // watcher either raises a phantom disk-conflict bar for a tab we no longer
+      // have, or early-returns and skips refreshing the content cache and FK
+      // index — which is what kept a node added in a detached window invisible
+      // here. `allFileContentsRef` is deliberately NOT cleared: it's the
+      // project-wide cache (FK index, global search, validation) and should keep
+      // its last-known content until the save broadcast replaces it.
+      setFileContents((prev) => {
+        if (prev[relativePath] === undefined) return prev;
+        const next = { ...prev };
+        delete next[relativePath];
+        return next;
+      });
+      setSavedContents((prev) => {
+        if (prev[relativePath] === undefined) return prev;
+        const next = { ...prev };
+        delete next[relativePath];
+        return next;
+      });
       setTimeout(() => {
         setTabs(current => {
           window.arcenApi.registerWindowTabs(current.map(t => t.relativePath));
@@ -1467,8 +1490,15 @@ export default function App() {
       window.arcenApi.readFile(relPath).then((content) => {
         const currentContent = fileContentsLatest.current[relPath];
         const currentSaved = savedContentsLatest.current[relPath];
+        // Only a file we actually have OPEN can have unsaved edits worth
+        // protecting. A leftover buffer for a tab that moved to another window
+        // (or was closed) would otherwise read as "unsaved edits here" and send
+        // us down the conflict path — raising a disk-conflict bar for a tab that
+        // isn't there, and skipping the cache / FK-index / revalidation refresh
+        // that a save in another window needs us to do.
+        const haveTab = tabsRef.current.some((t) => t.relativePath === relPath);
 
-        if (currentContent !== undefined && currentContent !== currentSaved) {
+        if (haveTab && currentContent !== undefined && currentContent !== currentSaved) {
           // File has unsaved edits — compare disk to editor
           if (content === currentContent) {
             setSavedContents((prev) => ({ ...prev, [relPath]: content }));
