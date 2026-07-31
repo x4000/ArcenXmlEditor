@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import Sidebar from './Sidebar';
+import Sidebar, { favoriteGroupKeysForPath, buildAutoFavoriteGroups } from './Sidebar';
 import TabBar from './TabBar';
 import EditorPane from './EditorPane';
 import StatusBar from './StatusBar';
@@ -328,11 +328,31 @@ export default function App() {
   folderNameByRelPathRef.current = folderNameByRelPath;
   const layerByRelPathRef = useRef(layerByRelPath);
   layerByRelPathRef.current = layerByRelPath;
+  // Read by sidebarTabForPath, which runs inside once-registered IPC handlers
+  // and long-lived closures where a captured state value would go stale.
+  const sidebarTabRef = useRef(sidebarTab);
+  sidebarTabRef.current = sidebarTab;
+  const favoritesRef = useRef(favorites);
+  favoritesRef.current = favorites;
+  // Auto-managed favorite groups (Beta/DLC1..N), memoized because
+  // sidebarTabForPath consults them on every tab switch and every editor click.
+  const autoFavoriteGroupsRef = useRef([]);
+  autoFavoriteGroupsRef.current = useMemo(() => buildAutoFavoriteGroups(folders), [folders]);
   // Which sidebar tab "owns" a given file's relPath — so every reveal/center
   // action routes to the right tab. Island data/schema files live in the Extra
   // tab, mod files in MODS, everything else in the Explorer. Reads refs so it's
   // safe to call from once-registered IPC handlers and context-menu closures.
+  //
+  // FAVORITES wins when the user is already looking at it and the file is listed
+  // there (in a user group or an auto-managed Beta/DLC one). Revealing a file
+  // means "show me where this is" — and if it's right there on the tab you're
+  // on, yanking you to the Explorer is the opposite of that. This only ever
+  // fires when favorites is already the active tab, so nothing else changes.
   function sidebarTabForPath(relPath) {
+    if (sidebarTabRef.current === 'favorites'
+        && favoriteGroupKeysForPath(relPath, favoritesRef.current, autoFavoriteGroupsRef.current).length > 0) {
+      return 'favorites';
+    }
     if (islandAllRelPathsRef.current.has(relPath)) return 'islands';
     if (/^mod_/.test(layerByRelPathRef.current.get(relPath)?.layer || '')) return 'mods';
     return 'files';

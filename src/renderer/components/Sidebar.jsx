@@ -129,6 +129,9 @@ export default function Sidebar({
   const [promptDialog, setPromptDialog] = useState(null);
   const openPrompt = (cfg) => setPromptDialog(cfg);
   const contentRef = useRef(null);
+  // Derived once here and shared with FavoritesList, since scrollFileIntoView
+  // needs the same group membership the list renders.
+  const autoFavoriteGroups = useMemo(() => buildAutoFavoriteGroups(folders), [folders]);
   const search = searchByTab[activeTab] || '';
   const setSearch = (val) => setSearchByTab((prev) => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] || '') : val }));
   const lowerSearch = search.toLowerCase();
@@ -202,6 +205,22 @@ export default function Sidebar({
               needsExpandWait = true;
             }
           }
+        }
+      }
+      // FAVORITES tab: same problem, different container — a row inside a
+      // collapsed group isn't in the DOM, so the lookup below would silently
+      // find nothing and leave the list wherever it was. Open every group that
+      // lists this file (a file can be in more than one).
+      if (activeTab === 'favorites') {
+        const groupKeys = favoriteGroupKeysForPath(targetPath, favorites, autoFavoriteGroups)
+          .filter((k) => !expandedFavoriteGroups?.has(k));
+        if (groupKeys.length && onExpandedFavoriteGroupsChange) {
+          onExpandedFavoriteGroupsChange((prev) => {
+            const next = new Set(prev);
+            for (const k of groupKeys) next.add(k);
+            return next;
+          });
+          needsExpandWait = true;
         }
       }
       const doScroll = () => {
@@ -388,6 +407,7 @@ export default function Sidebar({
             favorites={favorites || []}
             expanded={expandedFavoriteGroups}
             setExpanded={onExpandedFavoriteGroupsChange}
+            autoGroups={autoFavoriteGroups}
             onFavoritesChange={onFavoritesChange}
             onOpenFile={onOpenFile}
             activeFiles={activeFileSet}
@@ -1277,9 +1297,85 @@ function IslandsList({ islands, onOpenFile, activeFiles, modifiedFiles, search, 
   );
 }
 
+// Auto-managed favorite groups: Beta + DLC1..N.
+//
+// Suite mode: the DLC groups are driven by actual expansion-layer membership
+// (xmlFile.layer), not the _DLC<N> filename convention — so a DLC file shows up
+// regardless of its filename, and a base file that happens to be named
+// _DLC1.xml does not. Beta has no layer, so it stays a filename-convention
+// group.
+//
+// Narrow mode (no expansion layers present): unchanged — pure filename suffix
+// matching, which is still useful for non-Arcen titles that ship _DLC<N>.xml
+// files in a flat data folder.
+//
+// Exported because App needs the same answer to decide whether a file is
+// reachable on the FAVORITES tab (see favoriteGroupKeysForPath). Deriving it
+// twice would let the two drift.
+export function buildAutoFavoriteGroups(folders) {
+  if (!folders) return [];
+  const allFiles = folders.flatMap(f => f.xmlFiles);
+  const hasLayers = allFiles.some(x => x.layer && x.layer !== 'base');
+
+  if (hasLayers) {
+    const groups = [];
+    const beta = allFiles
+      .filter(x => x.relativePath.endsWith('_Beta.xml'))
+      .map(x => x.relativePath);
+    if (beta.length) groups.push({ name: 'Beta', files: beta, auto: true });
+    // Auto-managed DLC groups only — mods are deliberately excluded since
+    // a user with N mods would otherwise get N auto-groups they didn't ask
+    // for. Mod files can still be favorited individually into user-curated
+    // groups.
+    const byLayer = new Map(); // layerNum → relativePath[]
+    for (const x of allFiles) {
+      if (!x.layer || !/^dlc\d+$/.test(x.layer)) continue;
+      if (!byLayer.has(x.layerNum)) byLayer.set(x.layerNum, []);
+      byLayer.get(x.layerNum).push(x.relativePath);
+    }
+    for (const num of [...byLayer.keys()].sort((a, b) => a - b)) {
+      groups.push({ name: `DLC${num}`, files: byLayer.get(num), auto: true });
+    }
+    return groups;
+  }
+
+  const allXml = allFiles.map(x => x.relativePath);
+  const suffixes = [
+    { suffix: '_Beta.xml', name: 'Beta' },
+    { suffix: '_DLC1.xml', name: 'DLC1' },
+    { suffix: '_DLC2.xml', name: 'DLC2' },
+    { suffix: '_DLC3.xml', name: 'DLC3' },
+    { suffix: '_DLC4.xml', name: 'DLC4' },
+    { suffix: '_DLC5.xml', name: 'DLC5' },
+    { suffix: '_DLC6.xml', name: 'DLC6' },
+  ];
+  return suffixes
+    .map(({ suffix, name }) => ({ name, files: allXml.filter(f => f.endsWith(suffix)), auto: true }))
+    .filter(g => g.files.length > 0);
+}
+
+// Expansion keys of every favorites group that lists `relPath` — user groups by
+// name, auto-managed ones as `auto:<name>` (the same keys the expansion Set
+// uses). Empty means the file isn't reachable on the FAVORITES tab at all.
+//
+// Takes prebuilt `autoGroups` rather than `folders` because callers hit this on
+// every tab switch and every editor click; re-deriving the groups from the whole
+// file set each time would be pure waste. Memoize with buildAutoFavoriteGroups.
+export function favoriteGroupKeysForPath(relPath, favorites, autoGroups) {
+  if (!relPath) return [];
+  const keys = [];
+  for (const g of (favorites || [])) {
+    if (g.files?.includes(relPath)) keys.push(g.name);
+  }
+  for (const g of (autoGroups || [])) {
+    if (g.files.includes(relPath)) keys.push('auto:' + g.name);
+  }
+  return keys;
+}
+
 // `expanded` / `setExpanded` are owned by Sidebar, not this component — this one
 // unmounts on every tab switch, and the expansion set has to outlive that.
-function FavoritesList({ favorites, expanded, setExpanded, onFavoritesChange, onOpenFile, activeFiles, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
+function FavoritesList({ favorites, expanded, setExpanded, autoGroups = [], onFavoritesChange, onOpenFile, activeFiles, modifiedFiles, search, folders, mods = [], onContextMenu, onPrompt, onShowInFolder, onRenameFile }) {
   const vcs = useVcsStatus();
 
   // relativePath → xmlFile (carries layer/layerNum) so favorite rows can show
@@ -1377,47 +1473,6 @@ function FavoritesList({ favorites, expanded, setExpanded, onFavoritesChange, on
   // Narrow mode (no expansion layers present): unchanged — pure filename
   // suffix matching, which is still useful for non-Arcen titles that ship
   // _DLC<N>.xml files in a flat data folder.
-  const autoGroups = useMemo(() => {
-    if (!folders) return [];
-    const allFiles = folders.flatMap(f => f.xmlFiles);
-    const hasLayers = allFiles.some(x => x.layer && x.layer !== 'base');
-
-    if (hasLayers) {
-      const groups = [];
-      const beta = allFiles
-        .filter(x => x.relativePath.endsWith('_Beta.xml'))
-        .map(x => x.relativePath);
-      if (beta.length) groups.push({ name: 'Beta', files: beta, auto: true });
-      // Auto-managed DLC groups only — mods are deliberately excluded since
-      // a user with N mods would otherwise get N auto-groups they didn't ask
-      // for. Mod files can still be favorited individually into user-curated
-      // groups.
-      const byLayer = new Map(); // layerNum → relativePath[]
-      for (const x of allFiles) {
-        if (!x.layer || !/^dlc\d+$/.test(x.layer)) continue;
-        if (!byLayer.has(x.layerNum)) byLayer.set(x.layerNum, []);
-        byLayer.get(x.layerNum).push(x.relativePath);
-      }
-      for (const num of [...byLayer.keys()].sort((a, b) => a - b)) {
-        groups.push({ name: `DLC${num}`, files: byLayer.get(num), auto: true });
-      }
-      return groups;
-    }
-
-    const allXml = allFiles.map(x => x.relativePath);
-    const suffixes = [
-      { suffix: '_Beta.xml', name: 'Beta' },
-      { suffix: '_DLC1.xml', name: 'DLC1' },
-      { suffix: '_DLC2.xml', name: 'DLC2' },
-      { suffix: '_DLC3.xml', name: 'DLC3' },
-      { suffix: '_DLC4.xml', name: 'DLC4' },
-      { suffix: '_DLC5.xml', name: 'DLC5' },
-      { suffix: '_DLC6.xml', name: 'DLC6' },
-    ];
-    return suffixes
-      .map(({ suffix, name }) => ({ name, files: allXml.filter(f => f.endsWith(suffix)), auto: true }))
-      .filter(g => g.files.length > 0);
-  }, [folders]);
 
   useEffect(() => { if (newGroupInput && newGroupRef.current) newGroupRef.current.focus(); }, [newGroupInput]);
   useEffect(() => { if (renameIdx >= 0 && renameRef.current) { renameRef.current.focus(); renameRef.current.select(); } }, [renameIdx]);
