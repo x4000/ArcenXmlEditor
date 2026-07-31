@@ -94,6 +94,10 @@ export default function Sidebar({
   hasSharedMetadata,
   favorites,
   onFavoritesChange,
+  // Owned by App (and persisted to the session) rather than by FavoritesList,
+  // which unmounts on every sidebar tab switch — see §13.3.
+  expandedFavoriteGroups,
+  onExpandedFavoriteGroupsChange,
   scrollToFile,
   onScrollToFileDone,
   onShowInFolder,
@@ -125,28 +129,6 @@ export default function Sidebar({
   const [promptDialog, setPromptDialog] = useState(null);
   const openPrompt = (cfg) => setPromptDialog(cfg);
   const contentRef = useRef(null);
-  // Which favorite groups are expanded. Held HERE, not inside FavoritesList,
-  // because that component unmounts whenever another sidebar tab is showing —
-  // its local state reset on every remount, so switching to Explorer and back
-  // collapsed everything the user had opened.
-  //
-  // The reset was doubly bad for the AUTO-managed groups (Beta, DLC1..N): the
-  // seed below only knows about `favorites`, which those aren't in, so they came
-  // back collapsed every single time. That also defeated the scroll-to-active-
-  // file effect below — with the group closed, the active row isn't in the DOM
-  // for it to scroll to, so the sidebar snapped to the top and the user lost
-  // their place too.
-  const [favExpanded, setFavExpanded] = useState(() => new Set((favorites || []).map(g => g.name)));
-  // A group created externally (e.g. a tab-bar "Add to Favorites") should
-  // default to open rather than collapsed — the mount-only seed misses it.
-  useEffect(() => {
-    setFavExpanded((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const g of (favorites || [])) if (!next.has(g.name)) { next.add(g.name); changed = true; }
-      return changed ? next : prev;
-    });
-  }, [favorites]);
   const search = searchByTab[activeTab] || '';
   const setSearch = (val) => setSearchByTab((prev) => ({ ...prev, [activeTab]: typeof val === 'function' ? val(prev[activeTab] || '') : val }));
   const lowerSearch = search.toLowerCase();
@@ -404,8 +386,8 @@ export default function Sidebar({
         {activeTab === 'favorites' && (
           <FavoritesList
             favorites={favorites || []}
-            expanded={favExpanded}
-            setExpanded={setFavExpanded}
+            expanded={expandedFavoriteGroups}
+            setExpanded={onExpandedFavoriteGroupsChange}
             onFavoritesChange={onFavoritesChange}
             onOpenFile={onOpenFile}
             activeFiles={activeFileSet}

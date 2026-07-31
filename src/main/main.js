@@ -3649,7 +3649,8 @@ app.whenReady().then(async () => {
       }
     }
     // Seed windowLevelState from saved session (renderer will overwrite on first save)
-    for (const key of ['tabs', 'activeTab', 'expandedFolders', 'sidebarTab', 'sidebarWidth',
+    for (const key of ['tabs', 'activeTab', 'expandedFolders', 'expandedFavoriteGroups',
+                        'sidebarTab', 'sidebarWidth',
                         'sidebarSide', 'globalSearchHeight', 'editorScale', 'refPanelScale', 'theme',
                         'globalSearchIncludeMods', 'favorites']) {
       if (session[key] !== undefined) windowLevelState[key] = session[key];

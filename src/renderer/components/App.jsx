@@ -158,6 +158,12 @@ export default function App() {
   const [savedContents, setSavedContents] = useState({});
   const [sidebarTab, setSidebarTab] = useState('files');
   const [expandedFolders, setExpandedFolders] = useState(new Set());
+  // Expanded favorite groups, persisted alongside expandedFolders. User groups
+  // are keyed by name; the auto-managed ones (Beta, DLC1..N) by `auto:<name>`.
+  const [expandedFavoriteGroups, setExpandedFavoriteGroups] = useState(new Set());
+  // Favorite group names already observed. Null until the session restore arms
+  // it — see the auto-expand effect further down.
+  const seenFavoriteGroupsRef = useRef(null);
   const [validationErrors, setValidationErrors] = useState([]);
   // Merged project-wide validation set (this window's errors PLUS every detached
   // window's), pushed by the main process. Drives ONLY the footer/StatusBar red
@@ -860,6 +866,17 @@ export default function App() {
       if (Array.isArray(savedSession.favorites)) {
         setFavorites(savedSession.favorites);
       }
+      if (Array.isArray(savedSession.expandedFavoriteGroups)) {
+        setExpandedFavoriteGroups(new Set(savedSession.expandedFavoriteGroups));
+      }
+      // Whatever the session says is authoritative — mark the current group
+      // names as already-seen so the "a newly created group opens by default"
+      // rule below doesn't treat every restored group as new and re-open the
+      // ones the user deliberately collapsed. Set even when there are no saved
+      // favorites, so the guard is armed either way.
+      seenFavoriteGroupsRef.current = new Set(
+        (Array.isArray(savedSession.favorites) ? savedSession.favorites : []).map((g) => g.name)
+      );
 
       if (savedSession.tabs?.length) {
         const restoredTabs = [];
@@ -1812,6 +1829,7 @@ export default function App() {
       tabs: tabs.map((t) => t.relativePath),
       activeTab: activeTabIndex,
       expandedFolders: [...expandedFolders],
+      expandedFavoriteGroups: [...expandedFavoriteGroups],
       sidebarTab,
       sidebarWidth,
       sidebarSide,
@@ -1823,7 +1841,7 @@ export default function App() {
       globalSearchScopeFilter,
       favorites,
     });
-  }, [tabs, activeTabIndex, expandedFolders, sidebarTab, sidebarWidth, sidebarSide, globalSearchHeight, editorScale, refPanelScale, theme, globalSearchIncludeMods, globalSearchScopeFilter, favorites]);
+  }, [tabs, activeTabIndex, expandedFolders, expandedFavoriteGroups, sidebarTab, sidebarWidth, sidebarSide, globalSearchHeight, editorScale, refPanelScale, theme, globalSearchIncludeMods, globalSearchScopeFilter, favorites]);
 
   // Push window state to main process whenever it changes (debounced)
   useEffect(() => {
@@ -1833,6 +1851,28 @@ export default function App() {
 
   // Favorites are persisted as part of saveWindowState above — no separate
   // shared-prefs file anymore.
+
+  // A favorite group that appears while the app is running (created in the
+  // sidebar, or by an "Add to Favorites" that made a new group) should open by
+  // default. This used to be a blind "expand every group not in the set" pass,
+  // which was fine when the expansion state was thrown away on each remount —
+  // but now that it's restored from the session, that would re-open every group
+  // the user had collapsed. So we auto-expand only names we haven't seen before.
+  //
+  // The ref is armed during session restore; until then it stays null and this
+  // does nothing, so the empty initial `favorites` can't seed a bogus baseline.
+  useEffect(() => {
+    const seen = seenFavoriteGroupsRef.current;
+    if (!seen) return;
+    const fresh = (favorites || []).map((g) => g.name).filter((n) => !seen.has(n));
+    if (fresh.length === 0) return;
+    for (const n of fresh) seen.add(n);
+    setExpandedFavoriteGroups((prev) => {
+      const next = new Set(prev);
+      for (const n of fresh) next.add(n);
+      return next;
+    });
+  }, [favorites]);
 
   // ── Modified files set ──
   const modifiedFiles = useMemo(() => new Set(
@@ -3826,6 +3866,8 @@ export default function App() {
         hasSharedMetadata={!!sharedSchema}
         favorites={favorites}
         onFavoritesChange={setFavorites}
+        expandedFavoriteGroups={expandedFavoriteGroups}
+        onExpandedFavoriteGroupsChange={setExpandedFavoriteGroups}
         scrollToFile={scrollSidebarTo}
         onScrollToFileDone={() => setScrollSidebarTo(null)}
         onRequestCenterActive={async () => {
@@ -4170,10 +4212,12 @@ export default function App() {
             persistedQuery={globalSearchQuery}
             onQueryChange={setGlobalSearchQuery}
             onOpenFile={(filePath, line, highlightText) => {
+              // Via jumpToFile, not openFile+scroll: a result can live in a file
+              // a detached window owns, and openFile only hands those off (it
+              // fronts that window) — the line would then be applied here, to a
+              // tab this window doesn't have, so the jump silently vanished.
               const type = filePath.endsWith('.metadata') ? 'schema' : 'xml';
-              openFile(filePath, type).then(() => {
-                setPendingScrollLine({ _t: Date.now(), file: filePath, line, highlight: highlightText || globalSearchQuery });
-              });
+              jumpToFile({ file: filePath, type, line, highlight: highlightText || globalSearchQuery });
             }}
             onReplaceInFile={(filePath, newContent) => {
               allFileContentsRef.current[filePath] = newContent;
