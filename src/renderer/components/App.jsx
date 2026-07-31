@@ -1753,6 +1753,21 @@ export default function App() {
         }
       }, 150);
     };
+    // A detached window's UNSAVED buffer. Cache only — deliberately no editor
+    // state, no FK-index fold, no revalidation:
+    //   - we have no tab for this file (it lives in that window), so there's
+    //     nothing to reload here;
+    //   - the main window doesn't fold its OWN unsaved edits into the FK index
+    //     either (that happens on save), so folding someone else's would be
+    //     inconsistent, and doing it per keystroke-burst would be costly;
+    //   - the detached window already live-validates its active tab (§9.6).
+    // What this DOES fix is global search, which reads this cache directly.
+    window.arcenApi.onLiveBufferChanged?.((rawRelPath, content) => {
+      const relPath = norm(rawRelPath);
+      if (typeof content !== 'string') return;
+      allFileContentsRef.current[relPath] = content;
+    });
+
     window.arcenApi.onFileAddedOnDisk(() => scheduleSidebarRefresh());
     // A mod/expansion folder appeared or disappeared (main re-scanned the mod
     // sources on focus). Re-discover so the MODS tab + layer set update without

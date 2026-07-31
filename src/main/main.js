@@ -817,7 +817,17 @@ function createDetachedWindow(windowId, tabPaths, x, y, width, height) {
     // without this guard it would wipe the newly-created entry.
     const entry = windowRegistry.get(windowId);
     if (!entry || entry.browserWindow === win) {
+      const closedTabs = entry?.tabs || [];
       windowRegistry.delete(windowId);
+      // This window may have mirrored unsaved buffers into everyone else's bulk
+      // content cache (see 'push-live-buffer'). If it closed with changes
+      // discarded, those caches now hold text that exists nowhere — global
+      // search would keep reporting it. Announce each of its files as changed so
+      // the remaining windows re-read disk, which is the truth again. Files that
+      // WERE saved re-read to identical bytes and the handler no-ops.
+      for (const relPath of closedTabs) {
+        broadcastToAll('file-changed-on-disk', relPath);
+      }
       // Drop this window's validation contribution and re-merge so its file
       // reverts to the main window's (now-authoritative) results.
       detachedValidationByWindow.delete(windowId);
@@ -2367,6 +2377,15 @@ ipcMain.on('set-detached-active-tab', (event, index) => {
 });
 
 // Sync save of window-level state (tabs, sidebar, theme, etc.)
+// A window mirroring one of its UNSAVED buffers to the others. Pure relay: the
+// content is not written to disk and `recentSaves` / `fileMtimes` are untouched,
+// because nothing about the file on disk has changed. Receivers put it in their
+// bulk content cache only — see App.jsx's onLiveBufferChanged.
+ipcMain.on('push-live-buffer', (event, relativePath, content) => {
+  if (typeof relativePath !== 'string' || typeof content !== 'string') return;
+  broadcastToOtherWindows(event.sender, 'live-buffer-changed', relativePath, content);
+});
+
 ipcMain.on('save-window-state', (event, data) => {
   Object.assign(windowLevelState, data);
   sessionDirty = true;

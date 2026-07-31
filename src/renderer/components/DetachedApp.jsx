@@ -723,9 +723,23 @@ export default function DetachedApp({ windowId }) {
   const closeTab = useCallback((index) => {
     const tab = tabs[index];
     if (!tab) return;
-    if (fileContents[tab.relativePath] !== savedContents[tab.relativePath]) {
-      if (!confirm(`${tab.relativePath} has unsaved changes. Close anyway?`)) return;
+    const relPath = tab.relativePath;
+    const saved = savedContents[relPath];
+    const discarding = fileContents[relPath] !== saved;
+    if (discarding) {
+      if (!confirm(`${relPath} has unsaved changes. Close anyway?`)) return;
+      // Those unsaved edits were mirrored into the other windows' content
+      // caches; the user just threw them away, so put the on-disk text back or
+      // global search would keep reporting text that no longer exists anywhere.
+      if (typeof saved === 'string') {
+        allFileContentsRef.current[relPath] = saved;
+        pushedBuffersRef.current.set(relPath, saved);
+        window.arcenApi.pushLiveBuffer?.(relPath, saved);
+      }
     }
+    // Either way this window no longer owns the buffer — drop the mirror
+    // baseline so a later re-open starts clean.
+    if (!discarding) pushedBuffersRef.current.delete(relPath);
     setTabs(prev => prev.filter((_, i) => i !== index));
     if (activeTabIndex >= index && activeTabIndex > 0) setActiveTabIndex(prev => prev - 1);
     syncTabs();
@@ -856,6 +870,36 @@ export default function DetachedApp({ windowId }) {
     setFileContents(prev => ({ ...prev, [relativePath]: newContent }));
     allFileContentsRef.current[relativePath] = newContent;
   }, []);
+
+  // Mirror this window's unsaved buffers into the other windows' bulk content
+  // caches. The main window's copy of that cache is what GLOBAL SEARCH reads,
+  // and it only ever advanced on save — so a global find kept reporting the
+  // last-saved text (old line numbers, edits missing, deleted matches still
+  // listed) for anything being edited here. Main-window tabs never had the
+  // problem because their updateContent writes the same cache in-process.
+  //
+  // Covers every tab in this window, not just the active one, and dedupes
+  // against the last value pushed for each path. Debounced so a burst of typing
+  // costs one message; a tab whose content still matches disk is recorded as a
+  // baseline WITHOUT sending anything (the other windows already read that from
+  // disk), while a later revert back to the saved text still differs from the
+  // dirty value we last pushed and so gets sent.
+  const pushedBuffersRef = useRef(new Map());
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      for (const t of tabsRef.current) {
+        const p = t.relativePath;
+        const cur = fileContents[p];
+        if (typeof cur !== 'string') continue;
+        const pushed = pushedBuffersRef.current;
+        if (pushed.get(p) === cur) continue;
+        if (!pushed.has(p) && cur === savedContents[p]) { pushed.set(p, cur); continue; }
+        pushed.set(p, cur);
+        window.arcenApi.pushLiveBuffer?.(p, cur);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [fileContents, savedContents]);
 
   const captureSelectionNow = useCallback(() => {
     const view = editorViewRef.current;

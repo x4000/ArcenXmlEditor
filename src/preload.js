@@ -63,6 +63,17 @@ contextBridge.exposeInMainWorld('arcenApi', {
   onIslandYamlSourcesChanged: (callback) => {
     ipcRenderer.on('island-yaml-sources-changed', (_event, map) => callback(map));
   },
+  // Unsaved editor buffer mirrored from another window into everyone else's
+  // bulk content cache. Global search (main window only) reads that cache, so
+  // without this it reports the last-SAVED text for a file being edited in a
+  // detached window. Debounced by the sender.
+  pushLiveBuffer: (relativePath, content) => {
+    ipcRenderer.send('push-live-buffer', relativePath, content);
+  },
+  onLiveBufferChanged: (callback) => {
+    ipcRenderer.on('live-buffer-changed', (_event, relativePath, content) =>
+      callback(relativePath, content));
+  },
 
   // Validation window communication
   sendValidationResults: (results) => {
