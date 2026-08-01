@@ -19,6 +19,7 @@ const vcsStore = require('../editor/vcsStore');
 import { parseMetadata, parseSharedMetadata, buildMergedSchema, getCentralIdentifierKey, composeSchemaForFileLayer } from '../editor/schemaParser';
 import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIndex';
 import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
+import { makeDevAwareChecker } from '../editor/spellcheck';
 import { buildLayerMaps } from '../editor/validation';
 import { validateXMLFile } from '../editor/validation';
 import NSpell from 'nspell';
@@ -45,6 +46,9 @@ export default function DetachedApp({ windowId }) {
   const [editorScale, setEditorScale] = useState(100);
   const [refPanelScale, setRefPanelScale] = useState(100);
   const [pendingScrollLine, setPendingScrollLine] = useState(null);
+  // Bumped by "Re-validate All" so the live-validation effect re-runs even when
+  // no content/schema input changed.
+  const [revalidateNonce, setRevalidateNonce] = useState(0);
 
   const allFileContentsRef = useRef({});
   const schemasRef = useRef({});
@@ -113,6 +117,8 @@ export default function DetachedApp({ windowId }) {
   const activationHistoryRef = useRef([]);
   const [spellchecker, setSpellchecker] = useState(null);
   const spellcheckerRef = useRef(null);
+  // Dev-only dictionary words, consulted by the dev-aware checker wrapper.
+  const devWordsRef = useRef(new Set());
   const navHistoryRef = useRef({ list: [], pos: -1 });
   const navSkipRef = useRef(false);
   const [navState, setNavState] = useState({ canBack: false, canForward: false });
@@ -275,15 +281,20 @@ export default function DetachedApp({ windowId }) {
       setActiveTabIndex(detachedSession?.activeTab ?? 0);
       sessionLoadedRef.current = true;
 
-      // Initialize spellchecker
+      // Initialize spellchecker. Wrapped with the same dev-aware checker the
+      // main window uses: without it the DEV dictionary was ignored here
+      // entirely, so words the main window accepted in a dev context were
+      // flagged as misspelled in every detached window.
       try {
         const dictData = await window.arcenApi.loadSpellingDictionary();
+        devWordsRef.current = new Set(dictData.devCustom || []);
         if (dictData.aff && dictData.dic) {
           // NSpell imported at top level
-          const checker = new NSpell(dictData.aff, dictData.dic);
+          const nspell = new NSpell(dictData.aff, dictData.dic);
           if (dictData.custom?.length) {
-            for (const word of dictData.custom) checker.add(word);
+            for (const word of dictData.custom) nspell.add(word);
           }
+          const checker = makeDevAwareChecker(nspell, devWordsRef);
           spellcheckerRef.current = checker;
           setSpellchecker(checker);
         }
@@ -311,12 +322,14 @@ export default function DetachedApp({ windowId }) {
     const unsubscribeDictionaryChanged = window.arcenApi.onDictionaryChanged(async () => {
       try {
         const dictData = await window.arcenApi.loadSpellingDictionary();
+        devWordsRef.current = new Set(dictData.devCustom || []);
         if (dictData.aff && dictData.dic) {
           // NSpell imported at top level
-          const checker = new NSpell(dictData.aff, dictData.dic);
+          const nspell = new NSpell(dictData.aff, dictData.dic);
           if (dictData.custom?.length) {
-            for (const word of dictData.custom) checker.add(word);
+            for (const word of dictData.custom) nspell.add(word);
           }
+          const checker = makeDevAwareChecker(nspell, devWordsRef);
           spellcheckerRef.current = checker;
           setSpellchecker(checker);
           // Poke the active editor so its ViewPlugin rebuilds decorations with
@@ -338,10 +351,20 @@ export default function DetachedApp({ windowId }) {
       }
       pokeActiveEditor();
     });
+    // Dev-dictionary additions go into devWordsRef, not the NSpell instance —
+    // they're only accepted in dev contexts. This window used to ignore the
+    // event entirely, so a word added from the main window kept its squiggle
+    // here until restart.
+    const unsubscribeDevDictionaryWordAdded = window.arcenApi.onDevDictionaryWordAdded?.((word) => {
+      if (typeof word !== 'string' || !word) return;
+      devWordsRef.current.add(word);
+      pokeActiveEditor();
+    });
     return () => {
       unsubscribeDictionaryChanged?.();
       unsubscribeDictionaryWordAdded?.();
       unsubscribeDictionaryWordsAdded?.();
+      unsubscribeDevDictionaryWordAdded?.();
     };
   }, []);
 
@@ -631,6 +654,57 @@ export default function DetachedApp({ windowId }) {
           );
         } catch (_) {}
       }
+    });
+
+    // "Re-validate All" from the validator window. This window owns the live
+    // results for its active tab, so without re-running here that file's entries
+    // stayed frozen at whatever the last edit produced — the button looked like
+    // it skipped one file. Bumping the nonce re-runs the live-validation effect.
+    window.arcenApi.onRequestRevalidate?.(() => setRevalidateNonce((n) => n + 1));
+
+    // A file (or folder) renamed in another window. Re-key our tabs and caches,
+    // or this window keeps a tab pointing at a path that no longer exists —
+    // reads fail, and saving it writes the old filename back to disk.
+    window.arcenApi.onFileRenamed?.((rawOld, rawNew, isFolder) => {
+      const oldPath = norm(rawOld);
+      const newPath = norm(rawNew);
+      const oldPrefix = oldPath + '/';
+      const newPrefix = newPath + '/';
+      const rekey = (rel) => {
+        if (rel === oldPath) return newPath;
+        if (isFolder && rel.startsWith(oldPrefix)) return newPrefix + rel.slice(oldPrefix.length);
+        return rel;
+      };
+      const rekeyMap = (obj) => {
+        let changed = false;
+        const next = {};
+        for (const [k, v] of Object.entries(obj)) {
+          const nk = rekey(k);
+          if (nk !== k) changed = true;
+          next[nk] = v;
+        }
+        return changed ? next : obj;
+      };
+      allFileContentsRef.current = rekeyMap(allFileContentsRef.current);
+      folderNameByRelPathRef.current = new Map(
+        [...folderNameByRelPathRef.current].map(([k, v]) => [rekey(k), v])
+      );
+      const nextIslands = new Set();
+      for (const p of islandRelPathsRef.current) nextIslands.add(rekey(p));
+      islandRelPathsRef.current = nextIslands;
+      setFileContents(prev => rekeyMap(prev));
+      setSavedContents(prev => rekeyMap(prev));
+      setTabs(prev => {
+        let changed = false;
+        const next = prev.map(t => {
+          const np = rekey(t.relativePath);
+          if (np === t.relativePath) return t;
+          changed = true;
+          return { ...t, relativePath: np };
+        });
+        return changed ? next : prev;
+      });
+      syncTabs();
     });
 
     // An unsaved buffer mirrored from another window — cache only, same as the
@@ -989,6 +1063,7 @@ export default function DetachedApp({ windowId }) {
   const applyBufferUpdatesLocally = useCallback((updates) => {
     const editorUpdates = {};
     const skipped = [];
+    const saved = [];
     for (const [relPath, u] of Object.entries(updates || {})) {
       if (!u || typeof u.after !== 'string') continue;
       const hasTab = tabsRef.current.some((t) => t.relativePath === relPath);
@@ -999,9 +1074,25 @@ export default function DetachedApp({ windowId }) {
       }
       allFileContentsRef.current[relPath] = u.after;
       if (hasTab) editorUpdates[relPath] = u.after;
+      // See App.jsx: `save` means the sender left the disk write to whoever owns
+      // the tab. Suppress the echo so our own watcher doesn't treat it as an
+      // external change and raise a conflict bar against us.
+      if (u.save) {
+        recentSavesRef.current.add(relPath);
+        setTimeout(() => recentSavesRef.current.delete(relPath), 5000);
+        window.arcenApi.writeFile(relPath, u.after);
+        saved.push(relPath);
+      }
     }
     if (Object.keys(editorUpdates).length > 0) {
       setFileContents((prev) => ({ ...prev, ...editorUpdates }));
+    }
+    if (saved.length > 0) {
+      setSavedContents((prev) => {
+        const next = { ...prev };
+        for (const p of saved) next[p] = updates[p].after;
+        return next;
+      });
     }
     return skipped;
   }, []);
@@ -1232,7 +1323,7 @@ export default function DetachedApp({ windowId }) {
       window.arcenApi.sendDetachedValidation?.(activeFile, errs);
     }, 300);
     return () => clearTimeout(timer);
-  }, [fileContents, activeTab, composedMergedSchema, islandSchemaByRelPath, islandYamlSources]);
+  }, [fileContents, activeTab, composedMergedSchema, islandSchemaByRelPath, islandYamlSources, revalidateNonce]);
 
   // Ctrl+click navigation — same shared implementation the main window uses, so
   // detached windows are no longer dead-ended on these (they previously wired

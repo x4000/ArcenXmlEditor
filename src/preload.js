@@ -80,8 +80,17 @@ contextBridge.exposeInMainWorld('arcenApi', {
   pushBufferUpdates: (updates) => {
     ipcRenderer.send('apply-buffer-updates', updates);
   },
+  // { relPath: windowId } for every open tab in every window. Sync — callers use
+  // it mid-handler to decide whether they own a file before writing it.
+  getTabOwners: () => ipcRenderer.sendSync('get-tab-owners'),
   onBufferUpdatesApplied: (callback) => {
     ipcRenderer.on('buffer-updates-applied', (_event, updates) => callback(updates));
+  },
+  // A file (or, when isFolder, a whole table folder) was renamed by another
+  // window. Receivers re-key their tabs and content caches.
+  onFileRenamed: (callback) => {
+    ipcRenderer.on('file-renamed', (_event, oldPath, newPath, isFolder) =>
+      callback(oldPath, newPath, isFolder));
   },
 
   // Validation window communication

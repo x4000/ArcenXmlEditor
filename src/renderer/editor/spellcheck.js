@@ -706,6 +706,30 @@ export function buildNodeFlagRanges(tokens, content, flagName) {
 }
 
 /**
+ * Wrap an NSpell instance so `correct(word, isDev)` also accepts words from the
+ * DEV dictionary when the call site is a dev context. `devWordsRef` is a ref (or
+ * any `{current: Set}`) so the caller can swap the word set without rebuilding
+ * the checker.
+ *
+ * Shared by both window types. The detached window used to build a bare NSpell
+ * from `dictData.custom` alone, so every dev-dictionary word was flagged as
+ * misspelled there while the main window accepted it.
+ */
+export function makeDevAwareChecker(nspell, devWordsRef) {
+  return {
+    correct: (word, isDev) => {
+      if (nspell.correct(word)) return true;
+      if (isDev && devWordsRef.current.has(word)) return true;
+      return false;
+    },
+    suggest: (word) => nspell.suggest(word),
+    add: (word) => nspell.add(word),
+    remove: (word) => nspell.remove(word),
+    _nspell: nspell, // escape hatch if raw access is ever needed
+  };
+}
+
+/**
  * Check if a position falls within any dev-context range.
  */
 export function isInRange(ranges, pos) {

@@ -16,7 +16,7 @@ import { buildFKIndex, updateTableIndex, buildLookupSwaps } from '../editor/fkIn
 import { tokenize, buildAttrMap } from '../editor/xmlTokenizer';
 import { navigateToFKRow, navigateToMetadataDef, addUnknownSubNodeStub } from '../editor/navigation';
 import { validateAll, validateXMLFile, structuralErrorsToEntries, buildLayerMaps } from '../editor/validation';
-import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix, isSpellcheckTarget, isMetadataSpellcheckTarget } from '../editor/spellcheck';
+import { findMisspelledWords, findMisspelledWordsInMetadata, spellingMessagePrefix, isSpellcheckTarget, isMetadataSpellcheckTarget, makeDevAwareChecker } from '../editor/spellcheck';
 import { extractGrammarTargets } from '../editor/grammarTargets';
 import { fileDisplayName } from '../editor/layerDisplay';
 import { addIgnoreAttributesForSpellingPositions } from '../editor/spellingBatch';
@@ -83,20 +83,6 @@ function replaceWithinRanges(content, oldText, newText, ranges) {
   }
   out += content.slice(cursor);
   return out;
-}
-
-function makeDevAwareChecker(nspell, devWordsRef) {
-  return {
-    correct: (word, isDev) => {
-      if (nspell.correct(word)) return true;
-      if (isDev && devWordsRef.current.has(word)) return true;
-      return false;
-    },
-    suggest: (word) => nspell.suggest(word),
-    add: (word) => nspell.add(word),
-    remove: (word) => nspell.remove(word),
-    _nspell: nspell, // escape hatch if raw access is ever needed
-  };
 }
 
 export default function App() {
@@ -214,6 +200,15 @@ export default function App() {
   const extMetaRevalTimerRef = useRef(null);
   // Latest applyBufferUpdatesLocally, for the once-registered IPC effect.
   const applyBufferUpdatesLocallyRef = useRef(null);
+  // { relPath: windowId } snapshot, refreshed at the start of each
+  // content-mutating operation. Kept in a ref so commitFileUpdate can consult it
+  // per file without an IPC round trip inside the loop.
+  const tabOwnersRef = useRef(null);
+  const refreshTabOwners = useCallback(() => {
+    try { tabOwnersRef.current = window.arcenApi.getTabOwners?.() || null; }
+    catch (_) { tabOwnersRef.current = null; }
+    return tabOwnersRef.current;
+  }, []);
   // Snapshot of what was last shipped to the validator window. Used as the
   // source-of-truth comparison for the worker.onmessage "no-op if unchanged"
   // optimization — comparing against React state (which can be updated by
@@ -989,10 +984,27 @@ export default function App() {
   }, [activeTabIndex, tabs]);
 
   // ── Theme ──
+  // The re-broadcast guard matters: a theme arriving over IPC must not be sent
+  // straight back out. It wouldn't loop forever (main excludes the sender), but
+  // it would bounce one pointless round trip per toggle.
+  const themeFromIpcRef = useRef(false);
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    if (themeFromIpcRef.current) {
+      themeFromIpcRef.current = false;
+      return;
+    }
     window.arcenApi.sendTheme(theme);
   }, [theme]);
+  // Theme toggled in a detached window. Registered once; setTheme is a stable
+  // setter so there's no stale-closure hazard.
+  useEffect(() => {
+    window.arcenApi.onThemeChange?.((t) => {
+      if (t !== 'light' && t !== 'dark') return;
+      themeFromIpcRef.current = true;
+      setTheme(t);
+    });
+  }, []);
 
   // Broadcast and listen for editor scale changes across windows
   useEffect(() => {
@@ -1187,17 +1199,12 @@ export default function App() {
       if (!content) return;
       const updated = replaceSpellingInFile(file, content, oldText, newText);
       if (updated !== content) {
-        allFileContentsRef.current[file] = updated;
-        // Use functional update to check CURRENT state — the effect's [] deps means
-        // the closure's `fileContents` is frozen at mount (empty), so a direct check
-        // would always skip the update and the editor would show stale content while
-        // savedContents advances, incorrectly flagging the tab as modified.
-        setFileContents((prev) => {
-          if (prev[file] === undefined) return prev;
-          return { ...prev, [file]: updated };
-        });
-        window.arcenApi.writeFile(file, updated);
-        setSavedContents((prev) => ({ ...prev, [file]: updated }));
+        // Routes to the window that owns the tab when that isn't us; see
+        // commitFileUpdate. Local bookkeeping below still runs either way —
+        // this window's validator list should lose the entry regardless of who
+        // performed the write.
+        refreshTabOwnersRef.current?.();
+        commitFileUpdateRef.current?.(file, content, updated);
 
         // Remove matching spelling entries from validation state so they don't
         // pop back when periodic revalidation re-sends the results.
@@ -1231,6 +1238,11 @@ export default function App() {
         // Apply every distinct node edit as one transaction/write. Resolving
         // against the original document and deduplicating by opening-tag start
         // prevents both shifted positions and repeated attributes.
+        //
+        // The CM6-dispatch path only applies when OUR editor is showing this
+        // exact file; when another window owns it we hand the computed text over
+        // instead of writing its file out from under it.
+        refreshTabOwnersRef.current?.();
         const view = editorViewRef.current;
         const viewMatchesFile = view && view.state.doc.toString() === content;
         let updated;
@@ -1239,15 +1251,8 @@ export default function App() {
           updated = view.state.doc.toString();
         } else {
           updated = result.content;
-          setFileContents((prev) => {
-            if (prev[file] === undefined) return prev;
-            return { ...prev, [file]: updated };
-          });
         }
-
-        allFileContentsRef.current[file] = updated;
-        window.arcenApi.writeFile(file, updated);
-        setSavedContents((prev) => ({ ...prev, [file]: updated }));
+        commitFileUpdateRef.current?.(file, content, updated);
         lastLiveRescanContentRef.current[file] = updated;
 
         setValidationErrors((prev) => {
@@ -1363,17 +1368,22 @@ export default function App() {
       // every consumer that reads from it after this handler returns sees the
       // updated values. Collect the modified files for the React-state pass below.
       const modifiedFiles = [];
+      // One ownership snapshot for the whole sweep, and one relay batch for
+      // every file another window owns — a Replace All touching N such files
+      // costs one message, not N.
+      refreshTabOwnersRef.current?.();
+      const relay = {};
       for (const [file, content] of Object.entries(allFileContentsRef.current)) {
         const updated = replaceSpellingInFile(file, content, oldText, newText);
         if (updated !== content) {
-          allFileContentsRef.current[file] = updated;
-          window.arcenApi.writeFile(file, updated);
+          commitFileUpdateRef.current?.(file, content, updated, relay);
           // Keep live-rescan cache in sync so undo (or any later content change
           // back to the pre-replace bytes) is detected as a real change.
           lastLiveRescanContentRef.current[file] = updated;
           modifiedFiles.push(file);
         }
       }
+      if (Object.keys(relay).length > 0) window.arcenApi.pushBufferUpdates?.(relay);
       if (modifiedFiles.length === 0) return;
 
       // Second pass: a SINGLE atomic update for both fileContents and savedContents.
@@ -1511,6 +1521,49 @@ export default function App() {
       setGlobalValidationErrors(Array.isArray(merged) ? merged : []);
     });
   }, []);
+
+  // Commit new content for a file that a project-wide operation just rewrote
+  // (spelling replace / replace-all / ignore-node, global-search replace and its
+  // undo). These all used to write straight to disk from this window regardless
+  // of who owned the tab — so a file open in a detached window got its disk copy
+  // changed underneath that window, and the user's next save there silently
+  // reverted the fix.
+  //
+  // Files this window owns (or that nobody has open) are handled here as before.
+  // Anything owned elsewhere is handed to the owning window, which applies it to
+  // its own editor buffer and does the write. Returns true if the caller should
+  // do its own local bookkeeping (validation-entry pruning, live-rescan cache).
+  //
+  // Batch callers pass `relay` to accumulate hand-offs and flush once, so a
+  // Replace All across N files costs one message rather than N.
+  const commitFileUpdate = useCallback((file, before, after, relay = null) => {
+    const owners = tabOwnersRef.current;
+    const owner = owners ? owners[file] : undefined;
+    // The bulk cache advances either way — it's a cache, and the new text is a
+    // better approximation of the file than the pre-edit text even when another
+    // window is the one that will actually write it. (If that window rejects the
+    // hand-off on the `before` interlock, its next mirror push corrects us.)
+    allFileContentsRef.current[file] = after;
+    if (owner !== undefined && owner !== 'main') {
+      const batch = relay || {};
+      batch[file] = { before, after, save: true };
+      if (!relay) window.arcenApi.pushBufferUpdates?.(batch);
+      return false;
+    }
+    setFileContents((prev) => {
+      if (prev[file] === undefined) return prev;
+      return { ...prev, [file]: after };
+    });
+    window.arcenApi.writeFile(file, after);
+    setSavedContents((prev) => ({ ...prev, [file]: after }));
+    return true;
+  }, []);
+  // Refs for the once-registered IPC effect (empty deps) that hosts the
+  // spelling-replace handlers.
+  const commitFileUpdateRef = useRef(null);
+  commitFileUpdateRef.current = commitFileUpdate;
+  const refreshTabOwnersRef = useRef(null);
+  refreshTabOwnersRef.current = refreshTabOwners;
 
   // ── File watcher (registered once, uses refs for latest state) ──
   useEffect(() => {
@@ -3842,6 +3895,7 @@ export default function App() {
   const applyBufferUpdatesLocally = useCallback((updates) => {
     const editorUpdates = {};
     const skipped = [];
+    const saved = [];
     for (const [relPath, u] of Object.entries(updates || {})) {
       if (!u || typeof u.after !== 'string') continue;
       const hasTab = tabsRef.current.some((t) => t.relativePath === relPath);
@@ -3852,9 +3906,23 @@ export default function App() {
       }
       allFileContentsRef.current[relPath] = u.after;
       if (hasTab) editorUpdates[relPath] = u.after;
+      // `save` marks an operation that writes through to disk (spelling fix,
+      // global replace). We do the write because we own the tab — the sender
+      // deliberately didn't touch the file.
+      if (u.save) {
+        window.arcenApi.writeFile(relPath, u.after);
+        saved.push(relPath);
+      }
     }
     if (Object.keys(editorUpdates).length > 0) {
       setFileContents((prev) => ({ ...prev, ...editorUpdates }));
+    }
+    if (saved.length > 0) {
+      setSavedContents((prev) => {
+        const next = { ...prev };
+        for (const p of saved) next[p] = updates[p].after;
+        return next;
+      });
     }
     return skipped;
   }, []);
@@ -4332,14 +4400,11 @@ export default function App() {
               jumpToFile({ file: filePath, type, line, highlight: highlightText || globalSearchQuery });
             }}
             onReplaceInFile={(filePath, newContent) => {
-              allFileContentsRef.current[filePath] = newContent;
-              // If file is open in a tab, update editor state
-              if (fileContents[filePath] !== undefined) {
-                setFileContents((prev) => ({ ...prev, [filePath]: newContent }));
-              }
-              // Always write to disk
-              window.arcenApi.writeFile(filePath, newContent);
-              setSavedContents((prev) => ({ ...prev, [filePath]: newContent }));
+              // Through commitFileUpdate so a file open in a detached window is
+              // rewritten BY that window rather than having its disk copy
+              // changed underneath it.
+              refreshTabOwners();
+              commitFileUpdate(filePath, allFileContentsRef.current[filePath], newContent);
             }}
             onReplaceBatch={(changes) => {
               // changes: [{file, oldContent, newContent}]
@@ -4351,16 +4416,16 @@ export default function App() {
             onUndo={() => {
               const op = globalReplaceUndoRef.current.pop();
               if (!op) return;
+              refreshTabOwners();
+              const relay = {};
               for (const { file, oldContent, newContent } of op.files) {
+                // Only undo files still holding exactly what the replace wrote —
+                // anything edited since is left alone.
                 if (allFileContentsRef.current[file] === newContent) {
-                  allFileContentsRef.current[file] = oldContent;
-                  if (fileContents[file] !== undefined) {
-                    setFileContents((prev) => ({ ...prev, [file]: oldContent }));
-                  }
-                  window.arcenApi.writeFile(file, oldContent);
-                  setSavedContents((prev) => ({ ...prev, [file]: oldContent }));
+                  commitFileUpdate(file, newContent, oldContent, relay);
                 }
               }
+              if (Object.keys(relay).length > 0) window.arcenApi.pushBufferUpdates?.(relay);
               setGlobalUndoCount(globalReplaceUndoRef.current.length);
             }}
             onClose={() => setGlobalSearch(null)}

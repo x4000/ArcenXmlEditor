@@ -2395,6 +2395,18 @@ ipcMain.on('apply-buffer-updates', (event, updates) => {
   broadcastToOtherWindows(event.sender, 'buffer-updates-applied', updates);
 });
 
+// { relPath: windowId } across every open window. Synchronous because the
+// callers are inside content-mutating handlers that have to decide, per file and
+// without awaiting, whether they may edit/write it themselves or must hand it to
+// the window that owns the tab.
+ipcMain.on('get-tab-owners', (event) => {
+  const owners = {};
+  for (const [id, entry] of windowRegistry) {
+    for (const relPath of (entry.tabs || [])) owners[relPath] = id;
+  }
+  event.returnValue = owners;
+});
+
 ipcMain.on('save-window-state', (event, data) => {
   Object.assign(windowLevelState, data);
   sessionDirty = true;
@@ -2408,7 +2420,7 @@ ipcMain.handle('show-in-folder', (_event, filePath) => {
   shell.showItemInFolder(fullPath);
 });
 
-ipcMain.handle('rename-file', async (_event, oldPath, newPath) => {
+ipcMain.handle('rename-file', async (event, oldPath, newPath) => {
   const fullOld = path.isAbsolute(oldPath)
     ? oldPath
     : path.join(DATA_ROOT, oldPath);
@@ -2416,6 +2428,37 @@ ipcMain.handle('rename-file', async (_event, oldPath, newPath) => {
     ? newPath
     : path.join(DATA_ROOT, newPath);
   fs.renameSync(fullOld, fullNew);
+
+  // Re-key every window's tab list. A rename with no slash in `oldPath` is a
+  // FOLDER rename, which moves every file underneath it. Only the renaming
+  // window used to learn about any of this: other windows kept tabs pointing at
+  // the old path — reads failed, and SAVING such a tab wrote the old filename
+  // back out, resurrecting the file we just renamed away. The registry itself
+  // was stale too, so find-window-for-tab missed and Ctrl+click opened a
+  // duplicate of a file another window already had.
+  const isFolderRename = !oldPath.includes('/');
+  const oldPrefix = oldPath + '/';
+  const newPrefix = newPath + '/';
+  const rekey = (rel) => {
+    if (rel === oldPath) return newPath;
+    if (isFolderRename && rel.startsWith(oldPrefix)) return newPrefix + rel.slice(oldPrefix.length);
+    return rel;
+  };
+  for (const entry of windowRegistry.values()) {
+    if (!Array.isArray(entry.tabs)) continue;
+    entry.tabs = entry.tabs.map(rekey);
+  }
+  // Same for the per-file state registry, so cursor/scroll/ref-panel state
+  // follows the file rather than being stranded under a path that no longer
+  // exists.
+  for (const key of [...fileStateRegistry.keys()]) {
+    const next = rekey(key);
+    if (next === key) continue;
+    fileStateRegistry.set(next, fileStateRegistry.get(key));
+    fileStateRegistry.delete(key);
+    sessionDirty = true;
+  }
+  broadcastToOtherWindows(event.sender, 'file-renamed', oldPath, newPath, isFolderRename);
   return true;
 });
 
@@ -2976,8 +3019,13 @@ ipcMain.handle('sc-get-base-content', async (_event, pathArg) => {
   }
 });
 
-ipcMain.on('theme-change', (_event, theme) => {
-  if (validationWindow) {
+// Theme is global. This used to reach the validation window ONLY, so toggling
+// the theme in any editor window left every other editor window on the old one
+// until restart (DetachedApp has always listened for this; nothing ever sent it
+// there). Sender is excluded because it already applied the change locally.
+ipcMain.on('theme-change', (event, theme) => {
+  broadcastToOtherWindows(event.sender, 'theme-change', theme);
+  if (validationWindow && !validationWindow.isDestroyed()) {
     validationWindow.webContents.send('theme-change', theme);
   }
 });
