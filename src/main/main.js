@@ -2386,6 +2386,15 @@ ipcMain.on('push-live-buffer', (event, relativePath, content) => {
   broadcastToOtherWindows(event.sender, 'live-buffer-changed', relativePath, content);
 });
 
+// A multi-file in-memory edit computed in one window (the F2 rename) that has to
+// land in whichever window owns each affected tab. Pure relay, like
+// 'push-live-buffer' — nothing is written to disk; the receiving windows end up
+// with dirty tabs the user still has to save.
+ipcMain.on('apply-buffer-updates', (event, updates) => {
+  if (!updates || typeof updates !== 'object') return;
+  broadcastToOtherWindows(event.sender, 'buffer-updates-applied', updates);
+});
+
 ipcMain.on('save-window-state', (event, data) => {
   Object.assign(windowLevelState, data);
   sessionDirty = true;

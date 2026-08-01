@@ -585,6 +585,8 @@ export default function DetachedApp({ windowId }) {
   // Read by the once-registered IPC handlers below instead of re-subscribing.
   const refreshDiscoveredDataRef = useRef(null);
   refreshDiscoveredDataRef.current = refreshDiscoveredData;
+  // Latest applyBufferUpdatesLocally, for the once-registered IPC effect below.
+  const applyBufferUpdatesLocallyRef = useRef(null);
 
   useEffect(() => {
     // Normalize any backslash separators on incoming paths so content
@@ -611,6 +613,33 @@ export default function DetachedApp({ windowId }) {
         addRefreshTimer = null;
         refreshDiscoveredDataRef.current?.();
       }, 200);
+    });
+
+    // An F2 rename performed in another window. Rewrites this window's tabs for
+    // the affected files, so its editor stops showing the old id — and, more to
+    // the point, so saving here doesn't write the old id back over the rename.
+    window.arcenApi.onBufferUpdatesApplied?.((updates) => {
+      const skipped = applyBufferUpdatesLocallyRef.current?.(updates) || [];
+      if (skipped.length > 0) {
+        console.warn('[rename] skipped files whose content had moved on:', skipped);
+        try {
+          globalThis.alert?.(
+            'Some files could not be renamed here because they had unsaved changes '
+            + 'that the renaming window had not seen yet:\n\n'
+            + skipped.join('\n')
+            + '\n\nSave those files and run the rename again.'
+          );
+        } catch (_) {}
+      }
+    });
+
+    // An unsaved buffer mirrored from another window — cache only, same as the
+    // main window's handler (we have no tab for it; if we did, we'd own it).
+    window.arcenApi.onLiveBufferChanged?.((rawRelPath, content) => {
+      const relPath = norm(rawRelPath);
+      if (typeof content !== 'string') return;
+      if (tabsRef.current.some(t => t.relativePath === relPath)) return;
+      allFileContentsRef.current[relPath] = content;
     });
 
     window.arcenApi.onFileChangedOnDisk((rawRelPath) => {
@@ -953,6 +982,31 @@ export default function DetachedApp({ windowId }) {
     setNavState({ canBack: nav.pos > 0, canForward: nav.pos < nav.list.length - 1 });
   }, [tabs, captureSelectionNow]);
 
+  // Mirrors App.jsx's applyBufferUpdatesLocally — bulk cache always, editor
+  // buffer only for tabs this window holds, and a `before` interlock so a
+  // transform computed against text we no longer have can't silently overwrite
+  // live edits. See §11.4c.
+  const applyBufferUpdatesLocally = useCallback((updates) => {
+    const editorUpdates = {};
+    const skipped = [];
+    for (const [relPath, u] of Object.entries(updates || {})) {
+      if (!u || typeof u.after !== 'string') continue;
+      const hasTab = tabsRef.current.some((t) => t.relativePath === relPath);
+      const mine = hasTab ? fileContentsLatest.current[relPath] : allFileContentsRef.current[relPath];
+      if (typeof u.before === 'string' && typeof mine === 'string' && mine !== u.before) {
+        skipped.push(relPath);
+        continue;
+      }
+      allFileContentsRef.current[relPath] = u.after;
+      if (hasTab) editorUpdates[relPath] = u.after;
+    }
+    if (Object.keys(editorUpdates).length > 0) {
+      setFileContents((prev) => ({ ...prev, ...editorUpdates }));
+    }
+    return skipped;
+  }, []);
+  applyBufferUpdatesLocallyRef.current = applyBufferUpdatesLocally;
+
   const handleIdRename = useCallback((oldId, newId, sourceRelPath) => {
     const curSharedSchema = sharedSchemaRef.current;
     if (!curSharedSchema) return;
@@ -997,15 +1051,14 @@ export default function DetachedApp({ windowId }) {
         const newVal = isList ? replaceIdInValue(oldVal, oldId, newId) : newId;
         updated = updated.slice(0, from) + newVal + updated.slice(to);
       }
-      updates[relPath] = updated;
+      updates[relPath] = { before: content, after: updated };
     }
 
     if (Object.keys(updates).length === 0) return;
-    setFileContents(prev => ({ ...prev, ...updates }));
-    for (const [relPath, content] of Object.entries(updates)) {
-      allFileContentsRef.current[relPath] = content;
-    }
-  }, []);
+    applyBufferUpdatesLocally(updates);
+    // Relay to the windows that own the other affected tabs — see App.jsx.
+    window.arcenApi.pushBufferUpdates?.(updates);
+  }, [applyBufferUpdatesLocally]);
 
   // ── Keyboard shortcuts ──
   useEffect(() => {

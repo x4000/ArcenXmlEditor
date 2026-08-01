@@ -74,6 +74,15 @@ contextBridge.exposeInMainWorld('arcenApi', {
     ipcRenderer.on('live-buffer-changed', (_event, relativePath, content) =>
       callback(relativePath, content));
   },
+  // A multi-file in-memory edit (F2 central-identifier rename) that has to reach
+  // whichever window owns each affected tab. `updates` is
+  // { relPath: { before, after } } — see App.jsx's onBufferUpdatesApplied.
+  pushBufferUpdates: (updates) => {
+    ipcRenderer.send('apply-buffer-updates', updates);
+  },
+  onBufferUpdatesApplied: (callback) => {
+    ipcRenderer.on('buffer-updates-applied', (_event, updates) => callback(updates));
+  },
 
   // Validation window communication
   sendValidationResults: (results) => {

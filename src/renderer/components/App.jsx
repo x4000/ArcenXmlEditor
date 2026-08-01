@@ -212,6 +212,8 @@ export default function App() {
   // schemas have to be rebuilt, exactly as an in-app metadata save does).
   const revalidateAllRef = useRef(null);
   const extMetaRevalTimerRef = useRef(null);
+  // Latest applyBufferUpdatesLocally, for the once-registered IPC effect.
+  const applyBufferUpdatesLocallyRef = useRef(null);
   // Snapshot of what was last shipped to the validator window. Used as the
   // source-of-truth comparison for the worker.onmessage "no-op if unchanged"
   // optimization — comparing against React state (which can be updated by
@@ -1765,7 +1767,25 @@ export default function App() {
     window.arcenApi.onLiveBufferChanged?.((rawRelPath, content) => {
       const relPath = norm(rawRelPath);
       if (typeof content !== 'string') return;
+      // If we hold the tab, OUR buffer is the authoritative one — ignore. (Two
+      // windows shouldn't both have it, but a tear-off leaves a brief overlap.)
+      if (tabsRef.current.some((t) => t.relativePath === relPath)) return;
       allFileContentsRef.current[relPath] = content;
+    });
+
+    // An F2 rename performed in a detached window. Rewrites our tabs for the
+    // affected files, exactly as if the rename had happened here.
+    window.arcenApi.onBufferUpdatesApplied?.((updates) => {
+      const skipped = applyBufferUpdatesLocallyRef.current?.(updates) || [];
+      if (skipped.length > 0) {
+        console.warn('[rename] skipped files whose content had moved on:', skipped);
+        alert(
+          'Some files could not be renamed here because they had unsaved changes '
+          + 'that the renaming window had not seen yet:\n\n'
+          + skipped.join('\n')
+          + '\n\nSave those files and run the rename again.'
+        );
+      }
     });
 
     window.arcenApi.onFileAddedOnDisk(() => scheduleSidebarRefresh());
@@ -2238,6 +2258,29 @@ export default function App() {
     setFileContents((prev) => ({ ...prev, [relativePath]: newContent }));
     allFileContentsRef.current[relativePath] = newContent;
   }, []);
+
+  // Mirror this window's unsaved buffers to the detached windows, the same way
+  // they mirror theirs here (§11.4b). Global search doesn't run in a detached
+  // window, so this direction isn't about search — it's about a rename or FK
+  // lookup started THERE computing against current text rather than the
+  // last-saved copy of a file we're editing. When no detached window exists the
+  // relay drops it, so the common case costs one message and nothing else.
+  const pushedBuffersRef = useRef(new Map());
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      for (const t of tabsRef.current) {
+        const p = t.relativePath;
+        const cur = fileContents[p];
+        if (typeof cur !== 'string') continue;
+        const pushed = pushedBuffersRef.current;
+        if (pushed.get(p) === cur) continue;
+        if (!pushed.has(p) && cur === savedContents[p]) { pushed.set(p, cur); continue; }
+        pushed.set(p, cur);
+        window.arcenApi.pushLiveBuffer?.(p, cur);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [fileContents, savedContents]);
 
   // Helper: get single-line selected text from the editor
   const getEditorSelectedText = useCallback(() => {
@@ -3787,6 +3830,36 @@ export default function App() {
 
   // Batch-rename a central identifier and all FK references to it across all
   // currently loaded files. Called by RenameIdDialog on confirm.
+  // Apply a { relPath: {before, after} } batch to this window: the bulk cache
+  // always, and the editor buffer for any path we actually hold a tab for (which
+  // marks it dirty — a rename is unsaved everywhere until the user saves).
+  //
+  // `before` is a safety interlock. The window that computed the batch worked
+  // from its own copy of each file, and copies of a buffer another window is
+  // actively editing can lag by up to the mirror debounce (§11.4b). Applying a
+  // transform derived from text we no longer have would silently destroy edits,
+  // so a file whose current text doesn't match is skipped and reported instead.
+  const applyBufferUpdatesLocally = useCallback((updates) => {
+    const editorUpdates = {};
+    const skipped = [];
+    for (const [relPath, u] of Object.entries(updates || {})) {
+      if (!u || typeof u.after !== 'string') continue;
+      const hasTab = tabsRef.current.some((t) => t.relativePath === relPath);
+      const mine = hasTab ? fileContentsLatest.current[relPath] : allFileContentsRef.current[relPath];
+      if (typeof u.before === 'string' && typeof mine === 'string' && mine !== u.before) {
+        skipped.push(relPath);
+        continue;
+      }
+      allFileContentsRef.current[relPath] = u.after;
+      if (hasTab) editorUpdates[relPath] = u.after;
+    }
+    if (Object.keys(editorUpdates).length > 0) {
+      setFileContents((prev) => ({ ...prev, ...editorUpdates }));
+    }
+    return skipped;
+  }, []);
+  applyBufferUpdatesLocallyRef.current = applyBufferUpdatesLocally;
+
   const handleIdRename = useCallback((oldId, newId, sourceRelPath) => {
     const curSharedSchema = sharedSchemaLatest.current;
     if (!curSharedSchema) return;
@@ -3834,15 +3907,19 @@ export default function App() {
         const newVal = isList ? replaceIdInValue(oldVal, oldId, newId) : newId;
         updated = updated.slice(0, from) + newVal + updated.slice(to);
       }
-      updates[relPath] = updated;
+      updates[relPath] = { before: content, after: updated };
     }
 
     if (Object.keys(updates).length === 0) return;
-    setFileContents(prev => ({ ...prev, ...updates }));
-    for (const [relPath, content] of Object.entries(updates)) {
-      allFileContentsRef.current[relPath] = content;
-    }
-  }, []);
+    applyBufferUpdatesLocally(updates);
+    // A rename sweeps every file that references the id, and those files can be
+    // open in other windows — where THAT window's editor buffer, not ours, is
+    // authoritative. Relay so the owning window rewrites its own tab; otherwise
+    // it kept showing the old id and saving it would have undone the rename on
+    // disk. `before` lets each receiver verify it's transforming the same text
+    // we did.
+    window.arcenApi.pushBufferUpdates?.(updates);
+  }, [applyBufferUpdatesLocally]);
 
   // Sidebar resize drag handler. When the sidebar is on the right, the
   // handle sits on its left edge — so dragging right SHRINKS the sidebar.
