@@ -43,6 +43,19 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
   let lastHoverPos = -1;
   let fkClickTimer = null;
 
+  // `node_source="self"` means "this same table" — `copy_from` is the common
+  // case. The validator resolves it against the file's own folder, but every
+  // interactive consumer here took `attr.src` literally, looked up a table
+  // called "self", found nothing, and silently did nothing. Resolve it to the
+  // real table name so navigation, the value picker and the tooltip all work.
+  // Returns null when the schema can't tell us the table, which callers treat
+  // the same as no source at all.
+  const resolveSrc = (attr, schema) => {
+    if (!attr || !attr.src) return null;
+    if (attr.src !== 'self') return attr.src;
+    return schema?.folderName || null;
+  };
+
   return EditorView.domEventHandlers({
     keydown() {
       // Typing or navigating invalidates pending dropdown-open positions.
@@ -96,9 +109,12 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
           // the user select-a-word-then-Ctrl+V. Same guard on every ctrl+click
           // branch below.
           if ((event.ctrlKey || event.metaKey) && event.detail === 1 && attr.src && callbacks.navigateToFK) {
-            event.preventDefault();
-            callbacks.navigateToFK(attr.src, attr.v);
-            return true;
+            const srcTable = resolveSrc(attr, schema);
+            if (srcTable) {
+              event.preventDefault();
+              callbacks.navigateToFK(srcTable, attr.v);
+              return true;
+            }
           }
 
           // Ctrl+click lang-string — navigate to Language table entry
@@ -197,7 +213,10 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
             // Delay to detect if a drag-select or double-click follows
             if (fkClickTimer) clearTimeout(fkClickTimer);
             const cx = event.clientX, cy = event.clientY;
-            const attrCopy = { ...attr };
+            // Resolve `self` up front so the picker's options, and the
+            // Ctrl+click-an-option "go to it" path (which reads attr.src), both
+            // target the real table.
+            const attrCopy = { ...attr, src: resolveSrc(attr, schema) };
             fkClickTimer = setTimeout(() => {
               fkClickTimer = null;
               // Check if user has made a selection (drag)
@@ -232,7 +251,7 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
             if (event.detail >= 2) return false;
             if (fkClickTimer) clearTimeout(fkClickTimer);
             const cx = event.clientX, cy = event.clientY;
-            const attrCopy = { ...attr };
+            const attrCopy = { ...attr, src: resolveSrc(attr, schema) };
             fkClickTimer = setTimeout(() => {
               fkClickTimer = null;
               const sel = view.state.selection.main;
@@ -396,7 +415,11 @@ export function createClickHandler(getSchema, getFKIndex, callbacks, getFileLaye
               parts.push(attr.d.tooltip || attr.d.description);
             }
             const meta = ['Type: ' + attr.tp];
-            if (attr.src) meta.push('Source: ' + attr.src);
+            // Show the table `self` actually resolves to — "Source: self" told
+            // the reader nothing.
+            const srcTable = resolveSrc(attr, schema);
+            if (srcTable) meta.push('Source: ' + srcTable);
+            else if (attr.src) meta.push('Source: ' + attr.src);
             parts.push(meta.join(' · '));
             if (callbacks.showTooltip) callbacks.showTooltip(parts.join('\n'), cx, cy);
             return;

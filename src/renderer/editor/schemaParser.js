@@ -260,6 +260,19 @@ export function buildMergedSchema(sharedSchema, tableSchema) {
     isForSingleRoot: tableSchema.isForSingleRoot || false,
     attributes: merged,
     subNodes: tableSchema.subNodes || [],
+    // Carried through so consumers holding only the MERGED schema can still
+    // tell which table it describes. That's what `node_source="self"` needs to
+    // resolve against (copy_from and friends) — without it the click handler
+    // had no way to turn "self" into a real table, so Ctrl+click and the value
+    // picker both silently did nothing on those fields.
+    folderName: tableSchema.folderName,
+    // Likewise: dropping this made `never_validate="true"` invisible to every
+    // caller that only has the merged schema. Both windows' live-validation
+    // effects read it from there, so those tables were being live-validated in
+    // the editor despite §6.5 saying they're skipped entirely. (The worker and
+    // the save-time path read the RAW table schema, so they were always right —
+    // which is why the two disagreed.)
+    neverValidate: tableSchema.neverValidate || false,
   };
 }
 
@@ -327,6 +340,13 @@ export function composeSchemaWithExtensions(merged, extensions) {
     isForSingleRoot: merged.isForSingleRoot,
     attributes,
     subNodes,
+    // Preserved for the same reason buildMergedSchema carries them: `self`
+    // node_sources resolve against folderName, and neverValidate has to survive
+    // to the live-validation effects. A mod-layer file would otherwise lose
+    // copy_from navigation — and gain spurious validation — that base/DLC files
+    // don't.
+    folderName: merged.folderName,
+    neverValidate: merged.neverValidate || false,
   };
 }
 

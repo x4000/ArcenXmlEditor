@@ -562,20 +562,29 @@ export default function EditorPane({
           // the click-handler's dropdown and the validator's leniency.
           if (def.node_source) {
             const unrestricted = def.can_make_invalid_cross_links === 'true';
-            const options = getFKOptionsForLayer(
-              fkIndexRef.current, def.node_source, fileLayerRef.current, fileExtraLayersRef.current, unrestricted
-            );
+            // `self` means this file's own table (copy_from and friends); the
+            // FK index has no entry under that literal name, so autocomplete
+            // offered nothing until it was resolved. Mirrors clickHandler's
+            // resolveSrc.
+            const srcTable = def.node_source === 'self'
+              ? (schemaRef.current?.folderName || null)
+              : def.node_source;
+            const options = srcTable ? getFKOptionsForLayer(
+              fkIndexRef.current, srcTable, fileLayerRef.current, fileExtraLayersRef.current, unrestricted
+            ) : [];
             if (options.length > 0) {
               const coords = view.coordsAtPos(valuePos);
               if (coords) {
+                // Carry the RESOLVED table on the attr — the picker's
+                // Ctrl+click-an-option "go to it" path reads attr.src.
                 if (def.type === 'node-list') {
                   setMultiSelect({
-                    view, attr: { vs: valuePos, ve: valuePos, v: '', src: def.node_source },
+                    view, attr: { vs: valuePos, ve: valuePos, v: '', src: srcTable },
                     options, currentValues: [], x: coords.left, y: coords.bottom,
                   });
                 } else {
                   setDropdown({
-                    view, attr: { vs: valuePos, ve: valuePos, v: '', src: def.node_source },
+                    view, attr: { vs: valuePos, ve: valuePos, v: '', src: srcTable },
                     options, x: coords.left, y: coords.bottom,
                   });
                 }
