@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('arcenApi', {
   // { relPath: windowId } for every open tab in every window. Sync — callers use
   // it mid-handler to decide whether they own a file before writing it.
   getTabOwners: () => ipcRenderer.sendSync('get-tab-owners'),
+  // Ctrl+Shift+S — ask every OTHER window to save its dirty tabs too.
+  requestSaveAll: () => ipcRenderer.send('request-save-all'),
+  onSaveAllRequested: (callback) => {
+    ipcRenderer.on('save-all-requested', () => callback());
+  },
   onBufferUpdatesApplied: (callback) => {
     ipcRenderer.on('buffer-updates-applied', (_event, updates) => callback(updates));
   },

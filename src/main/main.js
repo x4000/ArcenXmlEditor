@@ -2407,6 +2407,16 @@ ipcMain.on('get-tab-owners', (event) => {
   event.returnValue = owners;
 });
 
+// Ctrl+Shift+S is "Save All", and a tab lives in exactly one window — so the
+// window that received the keystroke can only ever save its own handful. It
+// relays here and every OTHER window saves its dirty tabs too, which is what
+// "save all the open documents" means to someone with documents spread across
+// windows. Sender excluded: it saves locally before sending. Receivers must not
+// re-broadcast.
+ipcMain.on('request-save-all', (event) => {
+  broadcastToOtherWindows(event.sender, 'save-all-requested');
+});
+
 ipcMain.on('save-window-state', (event, data) => {
   Object.assign(windowLevelState, data);
   sessionDirty = true;

@@ -2352,6 +2352,22 @@ export default function App() {
     return '';
   }, []);
 
+  // Save every tab in THIS window whose buffer differs from what's on disk.
+  // Clean tabs are skipped: rewriting identical bytes only churns mtimes and
+  // VCS status, and with Save All now reaching every window that adds up.
+  const saveAllLocal = useCallback(() => {
+    for (const t of tabsRef.current) {
+      const p = t.relativePath;
+      if (fileContentsLatest.current[p] === savedContentsLatest.current[p]) continue;
+      saveFile(p);
+    }
+  }, [saveFile]);
+  const saveAllLocalRef = useRef(null);
+  saveAllLocalRef.current = saveAllLocal;
+  useEffect(() => {
+    window.arcenApi.onSaveAllRequested?.(() => saveAllLocalRef.current?.());
+  }, []);
+
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const handler = (e) => {
@@ -2378,17 +2394,21 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && !e.altKey) {
         e.preventDefault();
-        const tab = tabs[activeTabIndex];
-        if (tab) {
-          if (e.shiftKey) {
-            tabs.forEach((t) => saveFile(t.relativePath));
-          } else {
-            saveFile(tab.relativePath);
-          }
+        if (e.shiftKey) {
+          // Save All is app-wide: our own dirty tabs, then every other window's.
+          // Not gated on there being an active tab — Ctrl+Shift+S with the
+          // focus anywhere should still flush everything.
+          saveAllLocalRef.current?.();
+          window.arcenApi.requestSaveAll?.();
+        } else {
+          const tab = tabs[activeTabIndex];
+          if (tab) saveFile(tab.relativePath);
         }
       }
       // Ctrl+Shift+F — global search (toggles replace off if already in replace mode)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
+      // Both cases: Shift normally yields 'F', but Shift WITH CapsLock on yields
+      // 'f', and this window used to miss that while detached windows caught it.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
         e.preventDefault();
         // Synchronously blur the editor so keys the user types in the
         // window between this event and the input getting focus go to
@@ -2413,7 +2433,7 @@ export default function App() {
         if (!focusInput()) requestAnimationFrame(focusInput);
       }
       // Ctrl+Shift+H — global search+replace, focus replace field
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'H') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'H' || e.key === 'h')) {
         e.preventDefault();
         try { editorViewRef.current?.contentDOM.blur(); } catch (_) {}
         const sel = getEditorSelectedText();

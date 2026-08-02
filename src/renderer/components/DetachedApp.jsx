@@ -1151,19 +1151,40 @@ export default function DetachedApp({ windowId }) {
     window.arcenApi.pushBufferUpdates?.(updates);
   }, [applyBufferUpdatesLocally]);
 
+  // Same contract as App.jsx's saveAllLocal — dirty tabs in THIS window only.
+  const saveAllLocal = useCallback(() => {
+    for (const t of tabsRef.current) {
+      const p = t.relativePath;
+      if (fileContentsLatest.current[p] === savedContentsLatest.current[p]) continue;
+      saveFile(p);
+    }
+  }, [saveFile]);
+  const saveAllLocalRef = useRef(null);
+  saveAllLocalRef.current = saveAllLocal;
+  useEffect(() => {
+    window.arcenApi.onSaveAllRequested?.(() => saveAllLocalRef.current?.());
+  }, []);
+
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+      // Kept deliberately in lockstep with App.jsx's handler — including the
+      // altKey guard, which this window used to omit (Ctrl+Alt+S saved here but
+      // not there).
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && !e.altKey) {
         e.preventDefault();
-        const tab = tabs[activeTabIndex];
-        if (tab) {
-          if (e.shiftKey) tabs.forEach(t => saveFile(t.relativePath));
-          else saveFile(tab.relativePath);
+        if (e.shiftKey) {
+          saveAllLocalRef.current?.();
+          window.arcenApi.requestSaveAll?.();
+        } else {
+          const tab = tabs[activeTabIndex];
+          if (tab) saveFile(tab.relativePath);
         }
       }
       if (e.key === 'Escape' && diffTabIndex !== null) {
+        e.preventDefault();
         setDiffTabIndex(null);
+        return;
       }
       // Ctrl+Shift+F/H — open global search in main window
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f' || e.key === 'H' || e.key === 'h')) {
